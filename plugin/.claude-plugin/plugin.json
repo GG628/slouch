@@ -1,0 +1,6 @@
+{
+  "name": "pocket-expo",
+  "description": "Expo live-reload rules and helpers for vibe-coding Expo apps from your phone.",
+  "version": "0.1.0",
+  "author": { "name": "George Gomes" }
+}

@@ -56,10 +56,13 @@ expo-dev() {
 
   tmux new-session  -d -s "$name" -c "$PWD" -n metro
   tmux send-keys    -t "$name:metro"  "$metro" C-m
-  tmux new-window   -t "$name" -c "$PWD" -n claude
-  tmux send-keys    -t "$name:claude" "claude" C-m
-  tmux new-window   -t "$name" -c "$PWD" -n codex
-  tmux send-keys    -t "$name:codex"  "codex" C-m
+  local agent
+  for agent in claude codex; do
+    if command -v "$agent" >/dev/null 2>&1; then
+      tmux new-window -t "$name" -c "$PWD" -n "$agent"
+      tmux send-keys  -t "$name:$agent" "$agent" C-m
+    fi
+  done
   tmux new-window   -t "$name" -c "$PWD" -n shell
   tmux new-window   -t "$name" -c "$PWD" -n awake
   tmux send-keys    -t "$name:awake"  "caffeinate -dis" C-m   # keep the Mac awake while you're away
