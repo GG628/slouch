@@ -1,6 +1,6 @@
 ---
 name: expo-live-reload
-description: Rules for editing an Expo (SDK 55, expo-router) project that is being previewed live in Expo Go on a phone. Use whenever changing files in an Expo app so Fast Refresh keeps working and any change that needs a native rebuild is flagged before it breaks the preview.
+description: Rules for editing an Expo (expo-router) project that is being previewed live in Expo Go on a phone. Use whenever changing files in an Expo app so Fast Refresh keeps working and any change that needs a native rebuild is flagged before it breaks the preview.
 ---
 
 # Expo live-reload contract

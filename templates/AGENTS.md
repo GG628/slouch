@@ -6,8 +6,9 @@ to protect that loop. (This file is the Codex-facing copy of the same rules in
 `CLAUDE.md` — keep the two in sync.)
 
 ## Stack
-- Expo SDK 55, expo-router, TypeScript.
-- Previewed in Expo Go (custom dev build) over LAN, or `--tunnel` when off-network.
+- Expo (expo-router, TypeScript). Match the project's existing Expo SDK — check
+  `package.json`; do not assume a version.
+- Previewed in Expo Go (matching custom dev build) over LAN, or `--tunnel` off-network.
 
 ## The live-reload contract (read this first)
 - **Prefer JS/TS-only changes.** They Fast Refresh instantly in Expo Go — this is
