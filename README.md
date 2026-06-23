@@ -1,14 +1,25 @@
 <p align="center">
-  <img src="slouch.svg" width="92" alt="Slouch logo" />
+  <img src="slouch.svg" width="120" alt="Slouch" />
 </p>
 
 <h1 align="center">Slouch</h1>
 
-<p align="center"><b>Vibe-code your Expo apps from your phone</b> — prompt an AI agent, watch your app hot-reload live in your hand. Sofa first, bus next.</p>
+<p align="center"><i>Slouch on the sofa. Tinker with apps. Never get up.</i></p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-2f6f8f" alt="MIT" />
+  <img src="https://img.shields.io/badge/built%20with-Expo-3d8bb0" alt="Expo" />
+  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%2B%20Codex-5aa6c9" alt="agents" />
+  <img src="https://img.shields.io/badge/posture-horizontal-ffcf86" alt="posture: horizontal" />
+</p>
 
 <p align="center"><sub>⚠️ Early-stage / work in progress — opinionated personal tooling, expect rough edges.</sub></p>
 
 ---
+
+The good idea always lands at 11pm, when you're horizontal on the sofa with your phone — and the laptop is all the way over there. So the idea dies.
+
+**Slouch fixes that.** From your phone you prompt an AI coding agent over SSH; it edits your *real* Expo repo on your Mac; the app hot-reloads live in your hand. No desk. No standing up. **Sofa first, bus next.**
 
 It's the missing glue between two halves that already work:
 
@@ -17,8 +28,7 @@ It's the missing glue between two halves that already work:
 - **The preview** (Expo's own Fast Refresh): Expo Go on the same phone updating the
   instant a file is saved.
 
-Slouch wires them together, opinionated for the case where **every project is
-an Expo project**.
+Slouch wires them together, opinionated for the case where **every project is an Expo project**.
 
 ```
 Phone: Blink + Mosh ──► Mac: tmux ─┬─ metro    (npx expo start)
@@ -66,7 +76,7 @@ expo-dev          # boot the session (LAN); or `expo-dev --tunnel` for cellular
 Then from your phone: open Expo Go on your project, open your terminal app, attach
 to the tmux session, and prompt away. See [`docs/`](docs/) for the phone side.
 
-## The three levels
+## The three levels of horizontal
 
 1. **Desk** — `expo-dev` on the Mac, Expo Go on the phone. Same as always, just tidy.
 2. **Sofa** (same Wi-Fi) — phone terminal (Blink + **Mosh**) into the Mac; Mosh keeps
