@@ -1,7 +1,14 @@
-# pocket-expo
+<p align="center">
+  <img src="slouch.svg" width="92" alt="Slouch logo" />
+</p>
 
-Vibe-code your Expo apps **from your phone** — type a prompt to an AI agent, watch
-your app hot-reload live in your hand. Sofa first, bus next.
+<h1 align="center">Slouch</h1>
+
+<p align="center"><b>Vibe-code your Expo apps from your phone</b> — prompt an AI agent, watch your app hot-reload live in your hand. Sofa first, bus next.</p>
+
+<p align="center"><sub>⚠️ Early-stage / work in progress — opinionated personal tooling, expect rough edges.</sub></p>
+
+---
 
 It's the missing glue between two halves that already work:
 
@@ -10,7 +17,7 @@ It's the missing glue between two halves that already work:
 - **The preview** (Expo's own Fast Refresh): Expo Go on the same phone updating the
   instant a file is saved.
 
-pocket-expo wires them together, opinionated for the case where **every project is
+Slouch wires them together, opinionated for the case where **every project is
 an Expo project**.
 
 ```
@@ -39,8 +46,8 @@ Phone: swipe to Expo Go ◄─────────────────�
 ## Install
 
 ```bash
-git clone <this-repo> ~/Developer/pocket-expo
-cd ~/Developer/pocket-expo
+git clone git@github.com:GG628/slouch.git
+cd slouch
 ./install.sh          # sources expo-dev in ~/.zshrc, installs global Expo rules
 source ~/.zshrc
 ```
@@ -75,7 +82,7 @@ Agent strategy (Claude Code + Codex, both in the session) is in
 
 You can — but the app's lock-screen timeouts and sleep behaviour fight you. A
 phone terminal + **Mosh** survives sleep and network changes, runs whichever agent
-you want, and never asks for a passcode mid-flow. pocket-expo leans on that.
+you want, and never asks for a passcode mid-flow. Slouch leans on that.
 
 ## License
 
