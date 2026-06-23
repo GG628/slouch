@@ -23,7 +23,7 @@ The good idea always lands at 11pm, when you're horizontal on the sofa with your
 
 It's the missing glue between two halves that already work:
 
-- **The transport** (battle-tested by [@levelsio](https://levels.io) and others):
+- **The transport**:
   a phone terminal → SSH/Mosh → `tmux` → an AI coding agent editing your real repo.
 - **The preview** (Expo's own Fast Refresh): Expo Go on the same phone updating the
   instant a file is saved.
