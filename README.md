@@ -70,6 +70,24 @@ Requires `tmux` (`brew install tmux`). Update later with `git pull`.
 
 ## Use
 
+To prove the loop without dragging in auth, API calls, or native config, start
+with the bundled demo app:
+
+```bash
+cd examples/slouch-demo
+npm install       # first run only
+source ../../shell/expo-dev.zsh
+slouch init
+slouch doctor
+slouch start
+```
+
+Then from your phone:
+
+```bash
+tmux attach -t slouch-demo
+```
+
 In any Expo project:
 
 ```bash
