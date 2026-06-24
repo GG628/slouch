@@ -26,7 +26,7 @@ On LAN, Expo Go reaches Metro directly. Off-LAN you need a tunnel so the phone c
 reach the bundler:
 
 ```bash
-expo-dev --tunnel
+slouch start --tunnel
 ```
 
 This starts Metro with `npx expo start --tunnel`, which exposes a public proxy URL
@@ -35,7 +35,7 @@ still works, just over the tunnel.
 
 ## Checklist before you leave the house
 
-- [ ] Mac plugged in, **lid open**, `expo-dev --tunnel` running (the `awake`
+- [ ] Mac plugged in, **lid open**, `slouch start --tunnel` running (the `awake`
       window keeps it from sleeping).
 - [ ] Tailscale up on Mac and phone.
 - [ ] Test `mosh ... && tmux attach` once on Wi-Fi so the session is live.

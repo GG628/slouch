@@ -1,36 +1,83 @@
-# pocket-expo — drive your Expo projects from your phone.
+# Slouch - drive your Expo projects from your phone.
 #
-# `expo-dev`            boot/attach a tmux session for the Expo project in $PWD
-# `expo-dev <name>`     same, with an explicit session name
-# `expo-dev --tunnel`   start Metro with --tunnel (for cellular / off-LAN)
-# `expo-dev init`       drop CLAUDE.md + AGENTS.md into the current project
+# `slouch start`            boot/attach a tmux session for the Expo project in $PWD
+# `slouch start <name>`     same, with an explicit session name
+# `slouch start --tunnel`   start Metro with --tunnel (for cellular / off-LAN)
+# `slouch init`             drop CLAUDE.md + AGENTS.md into the current project
+# `slouch awake`            keep the Mac awake while the display may sleep
+# `slouch doctor`           check the phone-driven dev loop
+#
+# Backwards compatible:
+# `expo-dev`                alias for `slouch start`
+# `expo-dev init`           alias for `slouch init`
 #
 # Source this file from ~/.zshrc (install.sh does that for you).
 
 # Resolve the repo root from this file's own location, so `init` can find templates.
 POCKET_EXPO_HOME="${POCKET_EXPO_HOME:-${${(%):-%x}:A:h:h}}"
 
-expo-dev() {
+_slouch_session_name() {
+  local name="$1"
+  [[ -z "$name" ]] && name="${PWD:t}"
+  name="${name//./-}"; name="${name//:/-}"
+  print "$name"
+}
+
+_slouch_has_expo_config() {
+  [[ -f app.json || -f app.config.js || -f app.config.ts ]]
+}
+
+_slouch_ok() { print "ok    $1"; }
+_slouch_warn() { print "warn  $1"; }
+_slouch_fail() { print "fail  $1"; }
+_slouch_info() { print "info  $1"; }
+
+_slouch_init() {
   emulate -L zsh
 
-  # --- subcommand: init -----------------------------------------------------
-  if [[ "$1" == "init" ]]; then
-    if [[ ! -f app.json && ! -f app.config.js && ! -f app.config.ts ]]; then
-      print -u2 "expo-dev: no app.json/app.config.* here — run from an Expo project root."
-      return 1
-    fi
-    local f
-    for f in CLAUDE.md AGENTS.md; do
-      if [[ -e "$f" ]]; then
-        print "expo-dev: $f already exists, skipping"
-      elif cp "$POCKET_EXPO_HOME/templates/$f" "./$f"; then
-        print "expo-dev: wrote $f"
-      fi
-    done
-    return 0
+  if ! _slouch_has_expo_config; then
+    print -u2 "slouch: no app.json/app.config.* here - run from an Expo project root."
+    return 1
   fi
 
-  # --- boot / attach a session ---------------------------------------------
+  local f
+  for f in CLAUDE.md AGENTS.md; do
+    if [[ -e "$f" ]]; then
+      print "slouch: $f already exists, skipping"
+    elif cp "$POCKET_EXPO_HOME/templates/$f" "./$f"; then
+      print "slouch: wrote $f"
+    fi
+  done
+}
+
+_slouch_awake() {
+  emulate -L zsh
+
+  local duration=""
+  if [[ "$1" == "--for" && -n "$2" ]]; then
+    duration="$2"
+  elif [[ -n "$1" ]]; then
+    print -u2 "usage: slouch awake [--for seconds]"
+    return 1
+  fi
+
+  if ! command -v caffeinate >/dev/null 2>&1; then
+    print -u2 "slouch: caffeinate not found"
+    return 1
+  fi
+
+  if [[ -n "$duration" ]]; then
+    print "slouch: keeping the Mac awake for ${duration}s; display may sleep."
+    caffeinate -is -t "$duration"
+  else
+    print "slouch: keeping the Mac awake until you stop this command; display may sleep."
+    caffeinate -is
+  fi
+}
+
+_slouch_start() {
+  emulate -L zsh
+
   local tunnel=0 name="" arg
   for arg in "$@"; do
     case "$arg" in
@@ -38,14 +85,19 @@ expo-dev() {
       *)        name="$arg" ;;
     esac
   done
-  [[ -z "$name" ]] && name="${PWD:t}"
-  name="${name//./-}"; name="${name//:/-}"
+  name="$(_slouch_session_name "$name")"
 
-  if ! command -v tmux >/dev/null 2>&1; then
-    print -u2 "expo-dev: tmux not installed — 'brew install tmux'"; return 1
+  if ! _slouch_has_expo_config; then
+    print -u2 "slouch: no app.json/app.config.* here - run from an Expo project root."
+    return 1
   fi
 
-  # Already running? Just attach (or switch if we're already inside tmux).
+  if ! command -v tmux >/dev/null 2>&1; then
+    print -u2 "slouch: tmux not installed - 'brew install tmux'"
+    return 1
+  fi
+
+  # Already running? Just attach, or switch if already inside tmux.
   if tmux has-session -t "$name" 2>/dev/null; then
     if [[ -n "$TMUX" ]]; then tmux switch-client -t "$name"; else tmux attach -t "$name"; fi
     return
@@ -56,17 +108,172 @@ expo-dev() {
 
   tmux new-session  -d -s "$name" -c "$PWD" -n metro
   tmux send-keys    -t "$name:metro"  "$metro" C-m
-  local agent
+
+  local agent first_agent=""
   for agent in claude codex; do
     if command -v "$agent" >/dev/null 2>&1; then
+      [[ -z "$first_agent" ]] && first_agent="$agent"
       tmux new-window -t "$name" -c "$PWD" -n "$agent"
       tmux send-keys  -t "$name:$agent" "$agent" C-m
     fi
   done
+
   tmux new-window   -t "$name" -c "$PWD" -n shell
   tmux new-window   -t "$name" -c "$PWD" -n awake
-  tmux send-keys    -t "$name:awake"  "caffeinate -dis" C-m   # keep the Mac awake while you're away
-  tmux select-window -t "$name:claude"
+  tmux send-keys    -t "$name:awake"  "slouch awake" C-m
+
+  if [[ -n "$first_agent" ]]; then
+    tmux select-window -t "$name:$first_agent"
+  else
+    tmux select-window -t "$name:shell"
+  fi
 
   if [[ -n "$TMUX" ]]; then tmux switch-client -t "$name"; else tmux attach -t "$name"; fi
+}
+
+_slouch_doctor() {
+  emulate -L zsh
+
+  local tunnel=0 name="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      --tunnel) tunnel=1 ;;
+      *)        name="$arg" ;;
+    esac
+  done
+  name="$(_slouch_session_name "$name")"
+
+  print "Slouch doctor"
+  print "cwd   $PWD"
+  print "sess  $name"
+  print
+
+  local cmd missing=0
+  for cmd in tmux mosh caffeinate node npx; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      _slouch_ok "$cmd installed"
+    else
+      _slouch_fail "$cmd missing"
+      missing=1
+    fi
+  done
+
+  if command -v tailscale >/dev/null 2>&1; then
+    _slouch_ok "tailscale installed"
+    if tailscale status >/dev/null 2>&1; then
+      _slouch_ok "tailscale running"
+    else
+      _slouch_warn "tailscale installed but not connected"
+    fi
+  else
+    _slouch_warn "tailscale missing; bus/cellular SSH will be harder"
+  fi
+
+  if _slouch_has_expo_config; then
+    _slouch_ok "Expo config found"
+  else
+    _slouch_warn "no app.json/app.config.* here"
+  fi
+
+  if command -v tmux >/dev/null 2>&1; then
+    if tmux has-session -t "$name" 2>/dev/null; then
+      _slouch_ok "tmux session '$name' running"
+      if tmux list-windows -t "$name" -F '#W' | grep -q '^metro$'; then
+        _slouch_ok "metro window exists"
+      else
+        _slouch_warn "no metro tmux window in '$name'"
+      fi
+      if tmux list-windows -t "$name" -F '#W' | grep -q '^awake$'; then
+        _slouch_ok "awake window exists"
+      else
+        _slouch_warn "no awake tmux window in '$name'"
+      fi
+    else
+      _slouch_warn "tmux session '$name' not running; use 'slouch start'"
+    fi
+  fi
+
+  local found_agent=0
+  for cmd in claude codex aider cursor opencode gemini copilot; do
+    if pgrep -x "$cmd" >/dev/null 2>&1 || pgrep -f "$cmd" >/dev/null 2>&1; then
+      _slouch_ok "agent process detected: $cmd"
+      found_agent=1
+    fi
+  done
+  (( found_agent )) || _slouch_warn "no known agent process detected"
+
+  if pgrep -f "expo start" >/dev/null 2>&1 || pgrep -f "@expo/cli" >/dev/null 2>&1; then
+    _slouch_ok "Expo/Metro process detected"
+  else
+    _slouch_warn "Expo/Metro process not detected"
+  fi
+
+  print
+  if command -v pmset >/dev/null 2>&1; then
+    local source
+    source="$(pmset -g batt 2>/dev/null | head -n 1 | sed 's/^Now drawing from //')"
+    [[ -n "$source" ]] && _slouch_info "power source: $source"
+
+    if pmset -g assertions 2>/dev/null | grep -q "NoIdleSleepAssertion.*1"; then
+      _slouch_ok "active no-idle-sleep assertion"
+    else
+      _slouch_warn "no active no-idle-sleep assertion; use 'slouch awake'"
+    fi
+
+    if pmset -g assertions 2>/dev/null | grep -qi "caffeinate"; then
+      _slouch_ok "caffeinate assertion visible"
+    else
+      _slouch_warn "no caffeinate assertion visible"
+    fi
+  else
+    _slouch_warn "pmset unavailable; cannot inspect Mac sleep state"
+  fi
+
+  print
+  if (( tunnel )); then
+    _slouch_info "tunnel requested; use 'slouch start --tunnel' for cellular preview"
+  else
+    _slouch_info "LAN mode; use 'slouch start --tunnel' before bus/cellular sessions"
+  fi
+
+  return "$missing"
+}
+
+slouch() {
+  emulate -L zsh
+
+  local subcommand="$1"
+  shift || true
+
+  case "$subcommand" in
+    ""|start) _slouch_start "$@" ;;
+    init) _slouch_init "$@" ;;
+    awake) _slouch_awake "$@" ;;
+    doctor) _slouch_doctor "$@" ;;
+    help|-h|--help)
+      print "usage: slouch <command>"
+      print
+      print "commands:"
+      print "  start [--tunnel] [name]  boot/attach the Expo tmux session"
+      print "  init                     install Expo agent rules"
+      print "  awake [--for seconds]    keep Mac awake while display may sleep"
+      print "  doctor [--tunnel] [name] check the phone-driven dev loop"
+      ;;
+    *)
+      print -u2 "slouch: unknown command '$subcommand'"
+      print -u2 "try: slouch help"
+      return 1
+      ;;
+  esac
+}
+
+expo-dev() {
+  emulate -L zsh
+
+  if [[ "$1" == "init" ]]; then
+    shift
+    slouch init "$@"
+  else
+    slouch start "$@"
+  fi
 }

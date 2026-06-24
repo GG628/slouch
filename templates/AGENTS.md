@@ -1,4 +1,4 @@
-# Expo project — agent rules (pocket-expo)
+# Expo project — agent rules (Slouch)
 
 This project is developed **live from a phone**: an agent edits files here while
 Expo Go shows a hot-reloading preview on the same device. Everything below exists

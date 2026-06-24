@@ -15,8 +15,9 @@ sleep and Wi-Fi/cellular changes, so you reconnect to the exact same tmux state.
    brew install tmux mosh
    ```
 
-3. **Keep the Mac awake while you're away.** `expo-dev` already starts
-   `caffeinate -dis` in its `awake` window, which blocks idle/display/system sleep.
+3. **Keep the Mac awake while you're away.** `slouch start` already starts
+   `slouch awake` in its `awake` window, which blocks idle system sleep while
+   allowing the display to sleep.
    Caveat: on battery, **closing the lid still sleeps** the Mac — keep the lid open
    (and ideally plugged in) for sofa/bus sessions.
 
@@ -36,7 +37,8 @@ sleep and Wi-Fi/cellular changes, so you reconnect to the exact same tmux state.
 
 1. On the Mac (or over the phone, once connected), in your project:
    ```bash
-   expo-dev
+   slouch doctor
+   slouch start
    ```
 2. On the phone, in Blink:
    ```bash

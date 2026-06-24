@@ -35,7 +35,7 @@ Phone: Blink + Mosh ──► Mac: tmux ─┬─ metro    (npx expo start)
                                    ├─ claude   (Claude Code)
                                    ├─ codex    (Codex CLI)
                                    ├─ shell
-                                   └─ awake    (caffeinate -dis)
+                                   └─ awake    (slouch awake)
                                           │ agent saves files
                                           ▼
                                    Metro Fast Refresh
@@ -45,11 +45,15 @@ Phone: swipe to Expo Go ◄─────────────────�
 
 ## What you get
 
-- **`expo-dev`** — one command boots (or re-attaches) a tmux session per project,
+- **`slouch start`** — one command boots (or re-attaches) a tmux session per project,
   with Metro, both agents, a shell, and a keep-awake window already running.
-- **`expo-dev init`** — drops Expo-tuned `CLAUDE.md` + `AGENTS.md` into a project so
+- **`slouch init`** — drops Expo-tuned `CLAUDE.md` + `AGENTS.md` into a project so
   both agents understand the live-reload contract (don't break Fast Refresh, flag
   changes that need a native rebuild, never restart Metro).
+- **`slouch awake`** — keeps the Mac awake while letting the display sleep, so long
+  agent tasks can keep running without wasting as much battery.
+- **`slouch doctor`** — checks the sofa loop: local tools, tmux session, Metro,
+  agents, Tailscale, and Mac sleep assertions.
 - **Docs** for the connection layer (Blink + Mosh + tmux) and going cellular
   (Tailscale + `--tunnel`).
 
@@ -58,7 +62,7 @@ Phone: swipe to Expo Go ◄─────────────────�
 ```bash
 git clone git@github.com:GG628/slouch.git
 cd slouch
-./install.sh          # sources expo-dev in ~/.zshrc, installs global Expo rules
+./install.sh          # sources slouch in ~/.zshrc, installs global Expo rules
 source ~/.zshrc
 ```
 
@@ -69,8 +73,9 @@ Requires `tmux` (`brew install tmux`). Update later with `git pull`.
 In any Expo project:
 
 ```bash
-expo-dev init     # once per project — writes CLAUDE.md + AGENTS.md
-expo-dev          # boot the session (LAN); or `expo-dev --tunnel` for cellular
+slouch init       # once per project - writes CLAUDE.md + AGENTS.md
+slouch doctor     # check the Mac-side loop before you get horizontal
+slouch start      # boot the session (LAN); or `slouch start --tunnel` for cellular
 ```
 
 Then from your phone: open Expo Go on your project, open your terminal app, attach
@@ -78,12 +83,14 @@ to the tmux session, and prompt away. See [`docs/`](docs/) for the phone side.
 
 ## The three levels of horizontal
 
-1. **Desk** — `expo-dev` on the Mac, Expo Go on the phone. Same as always, just tidy.
+1. **Desk** — `slouch start` on the Mac, Expo Go on the phone. Same as always, just tidy.
 2. **Sofa** (same Wi-Fi) — phone terminal (Blink + **Mosh**) into the Mac; Mosh keeps
    the session alive across phone sleep so there's no passcode/reconnect loop.
    See [`docs/1-connection.md`](docs/1-connection.md).
-3. **Bus** (cellular) — add Tailscale and run `expo-dev --tunnel`.
+3. **Bus** (cellular) — add Tailscale and run `slouch start --tunnel`.
    See [`docs/2-cellular.md`](docs/2-cellular.md).
+
+`expo-dev` still works as a backwards-compatible alias for `slouch start`.
 
 Agent strategy (Claude Code + Codex, both in the session) is in
 [`docs/3-agents.md`](docs/3-agents.md).

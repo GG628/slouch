@@ -1,8 +1,8 @@
 ---
-description: Reference for the pocket-expo phone-driven Expo dev loop — how to launch it and what each tmux window does.
+description: Reference for the Slouch phone-driven Expo dev loop - how to launch it and what each tmux window does.
 ---
 
-You are helping with **pocket-expo**: vibe-coding an Expo app from a phone with a
+You are helping with **Slouch**: vibe-coding an Expo app from a phone with a
 live Expo Go preview. Apply the `expo-live-reload` skill rules to all edits in this
 project.
 
@@ -11,12 +11,13 @@ project:
 
 **Launch (on the Mac, in the project root):**
 ```bash
-expo-dev            # LAN / same Wi-Fi
-expo-dev --tunnel   # cellular / off-network
+slouch doctor          # check the loop before leaving the Mac alone
+slouch start           # LAN / same Wi-Fi
+slouch start --tunnel  # cellular / off-network
 ```
 This opens one tmux session named after the project, with windows:
 `metro` (Expo dev server) · `claude` · `codex` (if installed) · `shell` · `awake`
-(`caffeinate` keeping the Mac awake).
+(`slouch awake` keeping the Mac awake while the display may sleep).
 
 **From the phone:** connect with Blink + Mosh, `tmux attach -t <project>`, switch
 windows with `Ctrl-b n`, and swipe to Expo Go to watch changes hot-reload.

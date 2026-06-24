@@ -1,8 +1,8 @@
 # 3. Agents — running Claude Code and Codex together
 
-`expo-dev` opens a window for **each** agent (`claude` and `codex`) in the same
+`slouch start` opens a window for **each** agent (`claude` and `codex`) in the same
 tmux session, so you can use whichever you want without leaving your phone. Both
-read the project rules `expo-dev init` installed (`CLAUDE.md` / `AGENTS.md`).
+read the project rules `slouch init` installed (`CLAUDE.md` / `AGENTS.md`).
 
 ## The one rule: don't point both at the same files at once
 
