@@ -2,6 +2,7 @@
   "name": "slouch-demo",
   "version": "1.0.0",
   "private": true,
+  "main": "index.js",
   "scripts": {
     "start": "expo start",
     "ios": "expo start --ios",
@@ -10,6 +11,11 @@
   },
   "dependencies": {
     "expo": "^55.0.24",
+    "expo-audio": "~55.0.14",
+    "expo-blur": "~55.0.14",
+    "expo-constants": "~55.0.16",
+    "expo-file-system": "~55.0.22",
+    "expo-glass-effect": "~55.0.11",
     "react": "19.2.0",
     "react-native": "0.83.6"
   },

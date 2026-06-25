@@ -3,6 +3,8 @@
 # `slouch start`            boot/attach a tmux session for the Expo project in $PWD
 # `slouch start <name>`     same, with an explicit session name
 # `slouch start --tunnel`   start Metro with --tunnel (for cellular / off-LAN)
+# `slouch demo`             boot/attach the bundled demo app
+# `slouch restart`          restart the Metro window of an existing session
 # `slouch init`             drop CLAUDE.md + AGENTS.md into the current project
 # `slouch awake`            keep the Mac awake while the display may sleep
 # `slouch doctor`           check the phone-driven dev loop
@@ -14,13 +16,14 @@
 # Source this file from ~/.zshrc (install.sh does that for you).
 
 # Resolve the repo root from this file's own location, so `init` can find templates.
-POCKET_EXPO_HOME="${POCKET_EXPO_HOME:-${${(%):-%x}:A:h:h}}"
+# Keep POCKET_EXPO_HOME as a temporary compatibility fallback for old shells.
+SLOUCH_HOME="${SLOUCH_HOME:-${POCKET_EXPO_HOME:-${${(%):-%x}:A:h:h}}}"
 
 _slouch_session_name() {
   local name="$1"
   [[ -z "$name" ]] && name="${PWD:t}"
   name="${name//./-}"; name="${name//:/-}"
-  print "$name"
+  print -r -- "$name"
 }
 
 _slouch_has_expo_config() {
@@ -44,7 +47,7 @@ _slouch_init() {
   for f in CLAUDE.md AGENTS.md; do
     if [[ -e "$f" ]]; then
       print "slouch: $f already exists, skipping"
-    elif cp "$POCKET_EXPO_HOME/templates/$f" "./$f"; then
+    elif cp "$SLOUCH_HOME/templates/$f" "./$f"; then
       print "slouch: wrote $f"
     fi
   done
@@ -103,18 +106,31 @@ _slouch_start() {
     return
   fi
 
-  local metro="npx expo start"
-  (( tunnel )) && metro="npx expo start --tunnel"
+  # Env passed to Metro so the in-app bridge knows which tmux session to type
+  # prompts into, and (if a whisper model is present) how to transcribe dictation.
+  # Harmless for projects without the bridge middleware.
+  local metro_env="SLOUCH_SESSION=$name"
+  local model="${SLOUCH_WHISPER_MODEL:-$HOME/.cache/whisper/ggml-base.en.bin}"
+  [[ -f "$model" ]] && metro_env="$metro_env SLOUCH_WHISPER_MODEL=$model"
+
+  local metro="$metro_env npx expo start"
+  (( tunnel )) && metro="$metro_env npx expo start --tunnel"
 
   tmux new-session  -d -s "$name" -c "$PWD" -n metro
   tmux send-keys    -t "$name:metro"  "$metro" C-m
 
-  local agent first_agent=""
+  # Launch claude in acceptEdits so phone-driven prompts apply JS/TS edits without
+  # pausing for approval (heavier actions like installs still prompt). Override with
+  # SLOUCH_CLAUDE_FLAGS, e.g. "--permission-mode auto".
+  local claude_flags="${SLOUCH_CLAUDE_FLAGS:---permission-mode acceptEdits}"
+  local agent first_agent="" launch
   for agent in claude codex; do
     if command -v "$agent" >/dev/null 2>&1; then
       [[ -z "$first_agent" ]] && first_agent="$agent"
+      launch="$agent"
+      [[ "$agent" == claude ]] && launch="claude $claude_flags"
       tmux new-window -t "$name" -c "$PWD" -n "$agent"
-      tmux send-keys  -t "$name:$agent" "$agent" C-m
+      tmux send-keys  -t "$name:$agent" "$launch" C-m
     fi
   done
 
@@ -129,6 +145,45 @@ _slouch_start() {
   fi
 
   if [[ -n "$TMUX" ]]; then tmux switch-client -t "$name"; else tmux attach -t "$name"; fi
+}
+
+_slouch_demo() {
+  emulate -L zsh
+
+  cd "$SLOUCH_HOME/examples/slouch-demo" || return
+  _slouch_start "$@"
+}
+
+# Restart just the Metro window of an existing session (e.g. after changing
+# metro.config.js or adding deps). Add --tunnel for cellular/off-LAN.
+_slouch_restart() {
+  emulate -L zsh
+
+  local tunnel=0 name="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      --tunnel) tunnel=1 ;;
+      *)        name="$arg" ;;
+    esac
+  done
+  name="$(_slouch_session_name "$name")"
+
+  if ! tmux has-session -t "$name" 2>/dev/null; then
+    print -u2 "slouch: no session '$name' — use 'slouch start' or 'slouch demo'"
+    return 1
+  fi
+
+  local metro_env="SLOUCH_SESSION=$name"
+  local model="${SLOUCH_WHISPER_MODEL:-$HOME/.cache/whisper/ggml-base.en.bin}"
+  [[ -f "$model" ]] && metro_env="$metro_env SLOUCH_WHISPER_MODEL=$model"
+
+  local metro="$metro_env npx expo start --clear"
+  (( tunnel )) && metro="$metro_env npx expo start --tunnel --clear"
+
+  tmux send-keys -t "$name:metro" C-c
+  sleep 1
+  tmux send-keys -t "$name:metro" "$metro" C-m
+  print "slouch: restarting Metro in '$name' (window 0)"
 }
 
 _slouch_doctor() {
@@ -247,6 +302,8 @@ slouch() {
 
   case "$subcommand" in
     ""|start) _slouch_start "$@" ;;
+    demo) _slouch_demo "$@" ;;
+    restart) _slouch_restart "$@" ;;
     init) _slouch_init "$@" ;;
     awake) _slouch_awake "$@" ;;
     doctor) _slouch_doctor "$@" ;;
@@ -255,6 +312,8 @@ slouch() {
       print
       print "commands:"
       print "  start [--tunnel] [name]  boot/attach the Expo tmux session"
+      print "  demo [--tunnel]          boot/attach the bundled demo app"
+      print "  restart [--tunnel]       restart the Metro window of a session"
       print "  init                     install Expo agent rules"
       print "  awake [--for seconds]    keep Mac awake while display may sleep"
       print "  doctor [--tunnel] [name] check the phone-driven dev loop"

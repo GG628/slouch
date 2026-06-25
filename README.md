@@ -47,6 +47,8 @@ Phone: swipe to Expo Go ◄─────────────────�
 
 - **`slouch start`** — one command boots (or re-attaches) a tmux session per project,
   with Metro, both agents, a shell, and a keep-awake window already running.
+- **`slouch demo`** — boots the bundled demo app from anywhere, ready for the
+  in-app prompt overlay.
 - **`slouch init`** — drops Expo-tuned `CLAUDE.md` + `AGENTS.md` into a project so
   both agents understand the live-reload contract (don't break Fast Refresh, flag
   changes that need a native rebuild, never restart Metro).
@@ -82,11 +84,22 @@ slouch doctor
 slouch start
 ```
 
+After install, the shorter phone-friendly path is:
+
+```bash
+slouch demo --tunnel
+```
+
 Then from your phone:
 
 ```bash
 tmux attach -t slouch-demo
 ```
+
+Open the demo in Expo Go and use the in-app Slouch bar to send prompts straight
+back to the `claude` tmux window. The bridge is built into Metro, so it just works
+over LAN and `--tunnel` (cellular) — the URL field auto-fills from the Metro
+connection.
 
 In any Expo project:
 

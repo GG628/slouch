@@ -1,103 +1,98 @@
-import { useMemo, useState } from 'react';
+// This is "your app" — plain Expo/React Native, no Slouch plumbing.
+// Edit it freely (or prompt the agent to). The prompt bar lives in slouch/ and
+// floats on top no matter what you do in here.
+import { useState } from 'react';
 import {
   Pressable,
   ScrollView,
-  StyleSheet,
   StatusBar,
+  StyleSheet,
   Text,
   useWindowDimensions,
   View,
 } from 'react-native';
 
-const prompts = [
-  'Make the hero title say "Sofa mode works".',
-  'Change the button color and add a tiny celebratory subtitle.',
-  'Add a new card that says the phone loop is alive.',
-];
-
 export default function App() {
-  const [count, setCount] = useState(0);
+  const [taps, setTaps] = useState(0);
   const { width } = useWindowDimensions();
   const isNarrow = width < 380;
 
-  const activePrompt = useMemo(() => prompts[count % prompts.length], [count]);
-
   return (
-    <ScrollView
-      contentInsetAdjustmentBehavior="automatic"
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-    >
+    <View style={styles.screen}>
       <StatusBar barStyle="light-content" />
 
-      <View style={styles.hero}>
-        <Text selectable style={styles.eyebrow}>
-          Slouch Demo
-        </Text>
-        <Text selectable style={[styles.title, isNarrow && styles.titleNarrow]}>
-          Prompt from the sofa. Watch Expo reload.
-        </Text>
-        <Text selectable style={styles.body}>
-          This app is deliberately simple: no auth, no APIs, no native rebuilds.
-          It exists so Slouch changes are obvious in your hand.
-        </Text>
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+      >
+        <View style={styles.hero}>
+          <Text selectable style={styles.eyebrow}>
+            Slouch Demo
+          </Text>
+          <Text selectable style={[styles.title, isNarrow && styles.titleNarrow]}>
+            Edit me from the sofa.
+          </Text>
+          <Text selectable style={styles.body}>
+            Everything on this screen is plain app code. Use the prompt bar at the
+            bottom to ask the agent to change it — and watch it reload in your hand.
+          </Text>
+        </View>
 
-        <Pressable style={styles.button} onPress={() => setCount((value) => value + 1)}>
-          <Text style={styles.buttonText}>Change demo state</Text>
+        <Pressable style={styles.button} onPress={() => setTaps((n) => n + 1)}>
+          <Text style={styles.buttonText}>
+            Tapped {taps} {taps === 1 ? 'time' : 'times'}
+          </Text>
         </Pressable>
-      </View>
 
-      <View style={styles.card}>
-        <Text selectable style={styles.cardLabel}>
-          Current test prompt
-        </Text>
-        <Text selectable style={styles.prompt}>
-          {activePrompt}
-        </Text>
-      </View>
-
-      <View style={styles.row}>
-        <View style={styles.stat}>
-          <Text selectable style={styles.statValue}>
-            {count}
-          </Text>
-          <Text selectable style={styles.statLabel}>
-            local taps
-          </Text>
+        <View style={styles.row}>
+          <View style={styles.stat}>
+            <Text selectable style={styles.statValue}>
+              SDK 55
+            </Text>
+            <Text selectable style={styles.statLabel}>
+              Expo Go target
+            </Text>
+          </View>
+          <View style={styles.stat}>
+            <Text selectable style={styles.statValue}>
+              JS/TS
+            </Text>
+            <Text selectable style={styles.statLabel}>
+              hot reload only
+            </Text>
+          </View>
         </View>
-        <View style={styles.stat}>
-          <Text selectable style={styles.statValue}>
-            JS
-          </Text>
-          <Text selectable style={styles.statLabel}>
-            only
-          </Text>
-        </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#0b1220',
+    backgroundColor: '#ec4899',
+  },
+  scroll: {
+    flex: 1,
   },
   content: {
     flexGrow: 1,
     justifyContent: 'center',
-    gap: 18,
+    gap: 16,
     padding: 22,
+    paddingBottom: 220,
   },
   hero: {
     gap: 18,
-    padding: 22,
-    borderRadius: 28,
+    padding: 24,
+    borderRadius: 26,
+    borderCurve: 'continuous',
     backgroundColor: '#f8fafc',
   },
   eyebrow: {
     color: '#2563eb',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1,
     textTransform: 'uppercase',
@@ -118,35 +113,16 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   button: {
+    borderRadius: 22,
+    borderCurve: 'continuous',
+    backgroundColor: '#9333ea',
+    paddingVertical: 20,
     alignItems: 'center',
-    borderRadius: 999,
-    backgroundColor: '#111827',
-    paddingVertical: 15,
-    paddingHorizontal: 18,
   },
   buttonText: {
     color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  card: {
-    gap: 8,
-    borderRadius: 22,
-    backgroundColor: '#1d4ed8',
-    padding: 20,
-  },
-  cardLabel: {
-    color: '#bfdbfe',
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
-  prompt: {
-    color: '#ffffff',
     fontSize: 20,
     fontWeight: '800',
-    lineHeight: 26,
   },
   row: {
     flexDirection: 'row',
@@ -156,12 +132,13 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
     borderRadius: 20,
-    backgroundColor: '#172554',
+    borderCurve: 'continuous',
+    backgroundColor: '#102a56',
     padding: 18,
   },
   statValue: {
     color: '#ffffff',
-    fontSize: 32,
+    fontSize: 30,
     fontWeight: '900',
     fontVariant: ['tabular-nums'],
   },
