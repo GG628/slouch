@@ -19,7 +19,7 @@
 
 The good idea always lands at 11pm, when you're horizontal on the sofa with your phone — and the laptop is all the way over there. So the idea dies.
 
-**Slouch fixes that.** From your phone you prompt an AI coding agent over SSH; it edits your *real* Expo repo on your Mac; the app hot-reloads live in your hand. No desk. No standing up. **Sofa first, bus next.**
+**Slouch fixes that.** From your phone you prompt an AI coding agent over SSH; it edits your *real* Expo repo on your Mac; the app hot-reloads live in your hand.
 
 It's the missing glue between two halves that already work:
 
