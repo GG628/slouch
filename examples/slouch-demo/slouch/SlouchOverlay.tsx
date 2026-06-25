@@ -1,9 +1,13 @@
-// Slouch overlay — the in-app prompt bar that talks to the Metro bridge.
+// Slouch overlay — a floating status pill that expands into mission control.
 //
 // This file is Slouch *infrastructure*, not app code. It is mounted at the root
 // (see index.js) as a sibling of your app, so it floats on top and survives any
-// edit the agent makes to App.tsx. Don't move the prompt bar back into your app —
-// keeping it here is what makes it unbreakable.
+// edit the agent makes to App.tsx. Don't move it back into your app — keeping it
+// here is what makes it unbreakable.
+//
+// Collapsed: a small pill at the bottom with a status light (green = bridge ready).
+// Expanded:  a bottom sheet — chat, changes, agents, connection — then collapse
+//            and carry on using the app behind it.
 import Constants from 'expo-constants';
 import { BlurView } from 'expo-blur';
 import {
@@ -39,19 +43,15 @@ import {
 } from 'react-native';
 
 type SendState = 'idle' | 'sending' | 'sent' | 'error';
-type Tab = 'agent' | 'git';
+type Tab = 'chat' | 'changes' | 'agents' | 'connection';
 type GitFile = { status: string; path: string };
 
-// Persist the in-progress prompt to disk so a full reload (the kind Fast Refresh
-// can't patch) doesn't wipe what you were typing. Survives reloads, but not a
-// syntax-error red-screen (recover from the agent window in that case).
 const STATE_FILE = `${documentDirectory ?? ''}slouch-overlay-state.json`;
+const STATUS_BAR = Constants.statusBarHeight ?? 44;
+const BOTTOM_GAP = Platform.OS === 'ios' ? 28 : 18;
 
-// Returns "host:port" (port omitted only when it's the protocol default), so we
-// keep Metro's port — the bridge lives inside Metro on the same origin.
 function authorityFromUrl(value?: string) {
   if (!value) return '';
-
   try {
     const normalized = value.includes('://') ? value : `http://${value}`;
     return new URL(normalized).host;
@@ -79,13 +79,10 @@ function defaultBridgeUrl() {
 
   if (!authority) return '';
 
-  // Tunnels (xxx.exp.direct) serve over HTTPS on 443 and proxy straight to Metro,
-  // so the /slouch route rides the same tunnel — no extra port to expose.
   const hostname = authority.split(':')[0];
   if (hostname.endsWith('.exp.direct')) {
     return `https://${hostname}/slouch`;
   }
-
   return `http://${authority}/slouch`;
 }
 
@@ -117,7 +114,6 @@ function AdaptiveGlass({
       </GlassView>
     );
   }
-
   return (
     <BlurView tint="systemMaterial" intensity={90} style={style}>
       {children}
@@ -126,47 +122,46 @@ function AdaptiveGlass({
 }
 
 export function SlouchOverlay() {
+  const [expanded, setExpanded] = useState(false);
+  const [tab, setTab] = useState<Tab>('chat');
   const [prompt, setPrompt] = useState('');
   const [bridgeUrl, setBridgeUrl] = useState(defaultBridgeUrl);
   const [sendState, setSendState] = useState<SendState>('idle');
-  const [message, setMessage] = useState('Ready for sofa prompts.');
+  const [message, setMessage] = useState('');
+  const [bridgeReady, setBridgeReady] = useState(false);
+  const [bridgeTarget, setBridgeTarget] = useState('');
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [recording, setRecording] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
-  // Panel state (agent output mirror + git).
-  const [panelOpen, setPanelOpen] = useState(false);
-  const [tab, setTab] = useState<Tab>('agent');
+  const [messages, setMessages] = useState<string[]>([]);
   const [agentOutput, setAgentOutput] = useState('');
   const [gitBranch, setGitBranch] = useState('');
   const [gitFiles, setGitFiles] = useState<GitFile[]>([]);
   const [commitMsg, setCommitMsg] = useState('');
   const [branchName, setBranchName] = useState('');
   const [gitMsg, setGitMsg] = useState('');
-  const outputRef = useRef<ScrollView>(null);
+  const [pushing, setPushing] = useState(false);
 
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const chatRef = useRef<ScrollView>(null);
   const { height } = useWindowDimensions();
   const base = bridgeUrl.trim().replace(/\/$/, '');
 
-  // Rehydrate the in-progress prompt once on mount.
+  // ---- persistence: keep the draft prompt across reloads --------------------
   useEffect(() => {
     (async () => {
       try {
         const raw = await readAsStringAsync(STATE_FILE);
         const saved = JSON.parse(raw) as { prompt?: string };
-        if (typeof saved.prompt === 'string' && saved.prompt) {
-          setPrompt(saved.prompt);
-          setMessage('Restored your draft.');
-        }
+        if (typeof saved.prompt === 'string' && saved.prompt) setPrompt(saved.prompt);
       } catch {
-        // No saved state yet — fine.
+        // none yet
       }
       setHydrated(true);
     })();
   }, []);
 
-  // Persist the prompt (debounced) so it survives reloads.
   useEffect(() => {
     if (!hydrated) return;
     const timer = setTimeout(() => {
@@ -175,28 +170,52 @@ export function SlouchOverlay() {
     return () => clearTimeout(timer);
   }, [prompt, hydrated]);
 
+  // ---- keyboard height ------------------------------------------------------
   useEffect(() => {
     const showEvent =
       Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-
-    const showSubscription = Keyboard.addListener(showEvent, (event) => {
-      setKeyboardHeight(event.endCoordinates.height);
-    });
-    const hideSubscription = Keyboard.addListener(hideEvent, () => {
-      setKeyboardHeight(0);
-    });
-
+    const showSub = Keyboard.addListener(showEvent, (e) => setKeyboardHeight(e.endCoordinates.height));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
     return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
+      showSub.remove();
+      hideSub.remove();
     };
   }, []);
 
-  // Poll the agent's terminal output while the Agent tab is open.
+  // ---- status light: ping the bridge ----------------------------------------
   useEffect(() => {
-    if (!panelOpen || tab !== 'agent' || !base) return;
+    let active = true;
+    const ping = async () => {
+      if (!base) {
+        if (active) setBridgeReady(false);
+        return;
+      }
+      try {
+        const r = await fetch(`${base}/health`);
+        const body = (await r.json().catch(() => ({}))) as { target?: string };
+        if (active) {
+          setBridgeReady(r.ok);
+          if (typeof body.target === 'string') setBridgeTarget(body.target);
+        }
+      } catch {
+        if (active) {
+          setBridgeReady(false);
+          setBridgeTarget('');
+        }
+      }
+    };
+    ping();
+    const id = setInterval(ping, 4000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [base]);
 
+  // ---- poll the agent's output while the Chat tab is open -------------------
+  useEffect(() => {
+    if (!expanded || tab !== 'chat' || !base) return;
     let active = true;
     const tick = async () => {
       try {
@@ -204,21 +223,20 @@ export function SlouchOverlay() {
         const body = (await res.json()) as { text?: string };
         if (active && typeof body.text === 'string') setAgentOutput(body.text);
       } catch {
-        // ignore transient errors while polling
+        // transient
       }
     };
-
     tick();
     const id = setInterval(tick, 1500);
     return () => {
       active = false;
       clearInterval(id);
     };
-  }, [panelOpen, tab, base]);
+  }, [expanded, tab, base]);
 
   async function refreshGit() {
     if (!base) {
-      setGitMsg('Set the bridge URL first.');
+      setGitMsg('Connect to your Mac first.');
       return;
     }
     try {
@@ -233,29 +251,32 @@ export function SlouchOverlay() {
     }
   }
 
-  // Load git status when the Git tab opens.
+  // Load branch name on open (for the header) + changes when the tab opens.
   useEffect(() => {
-    if (panelOpen && tab === 'git' && base) refreshGit();
+    if (expanded && base) refreshGit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [panelOpen, tab, base]);
+  }, [expanded, tab, base]);
+
+  // Keep chat scrolled to the newest content.
+  useEffect(() => {
+    if (expanded && tab === 'chat') {
+      const t = setTimeout(() => chatRef.current?.scrollToEnd({ animated: true }), 60);
+      return () => clearTimeout(t);
+    }
+  }, [agentOutput, messages, expanded, tab]);
 
   async function sendPrompt() {
     const trimmedPrompt = prompt.trim();
-
-    if (!trimmedPrompt) {
-      setMessage('Type a prompt first.');
-      setSendState('error');
-      return;
-    }
+    if (!trimmedPrompt) return;
     if (!base) {
-      setMessage('Set the bridge URL from the Mac first.');
+      setMessage('Connect to your Mac first.');
       setSendState('error');
+      setTab('connection');
       return;
     }
 
     setSendState('sending');
-    setMessage('Sending to the agent...');
-
+    setMessage('');
     try {
       const response = await fetch(`${base}/prompt`, {
         method: 'POST',
@@ -265,13 +286,10 @@ export function SlouchOverlay() {
       const body = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(body.error || `Bridge returned ${response.status}`);
 
+      setMessages((m) => [...m, trimmedPrompt]);
       setPrompt('');
       setSendState('sent');
-      setMessage('Sent. Watch Metro reload.');
-      if (!panelOpen) {
-        setPanelOpen(true);
-        setTab('agent');
-      }
+      setTab('chat');
     } catch (error) {
       setSendState('error');
       setMessage(error instanceof Error ? error.message : 'Could not reach bridge.');
@@ -282,7 +300,6 @@ export function SlouchOverlay() {
     try {
       const perm = await requestRecordingPermissionsAsync();
       if (!perm.granted) {
-        setSendState('error');
         setMessage('Microphone permission denied.');
         return;
       }
@@ -290,11 +307,9 @@ export function SlouchOverlay() {
       await recorder.prepareToRecordAsync();
       recorder.record();
       setRecording(true);
-      setSendState('idle');
       setMessage('Listening… tap to stop.');
     } catch (error) {
       setRecording(false);
-      setSendState('error');
       setMessage(error instanceof Error ? error.message : 'Could not start recording.');
     }
   }
@@ -303,18 +318,15 @@ export function SlouchOverlay() {
     try {
       await recorder.stop();
       setRecording(false);
-
       const uri = recorder.uri;
       if (!uri) throw new Error('No audio captured.');
       if (!base) {
-        setSendState('error');
-        setMessage('Set the bridge URL first.');
+        setMessage('Connect to your Mac first.');
+        setTab('connection');
         return;
       }
-
       setSendState('sending');
       setMessage('Transcribing…');
-
       const audio = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
       const response = await fetch(`${base}/transcribe`, {
         method: 'POST',
@@ -323,17 +335,14 @@ export function SlouchOverlay() {
       });
       const body = (await response.json()) as { text?: string; error?: string };
       if (!response.ok) throw new Error(body.error || `Bridge returned ${response.status}`);
-
       const text = (body.text ?? '').trim();
+      setSendState('idle');
       if (!text) {
-        setSendState('idle');
         setMessage('Heard nothing — try again.');
         return;
       }
-
       setPrompt((prev) => (prev ? `${prev} ${text}` : text));
-      setSendState('idle');
-      setMessage('Transcribed. Edit or hit Send.');
+      setMessage('');
     } catch (error) {
       setRecording(false);
       setSendState('error');
@@ -344,6 +353,13 @@ export function SlouchOverlay() {
   function toggleMic() {
     if (recording) stopAndTranscribe();
     else startRecording();
+  }
+
+  function newChat() {
+    setMessages([]);
+    setAgentOutput('');
+    setMessage('');
+    setSendState('idle');
   }
 
   async function gitCommit() {
@@ -359,7 +375,7 @@ export function SlouchOverlay() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: msg }),
       });
-      const body = (await res.json()) as { result?: string; error?: string };
+      const body = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(body.error || `Bridge returned ${res.status}`);
       setCommitMsg('');
       setGitMsg('Committed.');
@@ -369,13 +385,34 @@ export function SlouchOverlay() {
     }
   }
 
+  async function gitPush() {
+    if (!base) {
+      setGitMsg('Connect to your Mac first.');
+      setTab('connection');
+      return;
+    }
+    setPushing(true);
+    setGitMsg('Pushing…');
+    try {
+      const res = await fetch(`${base}/git/push`, { method: 'POST' });
+      const body = (await res.json()) as { result?: string; error?: string };
+      if (!res.ok) throw new Error(body.error || `Bridge returned ${res.status}`);
+      setGitMsg(body.result ?? 'Pushed.');
+      refreshGit();
+    } catch (error) {
+      setGitMsg(error instanceof Error ? error.message : 'Push failed.');
+    } finally {
+      setPushing(false);
+    }
+  }
+
   async function gitSwitch(create: boolean) {
     const name = branchName.trim();
     if (!name) {
       setGitMsg('Type a branch name.');
       return;
     }
-    setGitMsg(create ? 'Creating branch…' : 'Switching…');
+    setGitMsg(create ? 'Creating…' : 'Switching…');
     try {
       const res = await fetch(`${base}/git/switch`, {
         method: 'POST',
@@ -392,52 +429,148 @@ export function SlouchOverlay() {
     }
   }
 
-  function openTab(next: Tab) {
-    setTab(next);
-    setPanelOpen(true);
+  const dotColor =
+    sendState === 'error'
+      ? '#fb7185'
+      : sendState === 'sending'
+        ? '#fbbf24'
+        : bridgeReady
+          ? '#22c55e'
+          : '#64748b';
+
+  // ---- collapsed pill -------------------------------------------------------
+  if (!expanded) {
+    return (
+      <View pointerEvents="box-none" style={[styles.root, styles.collapsedRoot]}>
+        <AdaptiveGlass interactive style={styles.pillGlass}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open Slouch"
+            onPress={() => setExpanded(true)}
+            style={styles.pill}
+          >
+            <View style={[styles.dot, { backgroundColor: dotColor }]} />
+            <Text style={styles.pillText}>Slouch</Text>
+          </Pressable>
+        </AdaptiveGlass>
+      </View>
+    );
   }
 
-  const panelMaxHeight = Math.min(height * 0.4, 320);
+  // ---- expanded sheet -------------------------------------------------------
+  const sheetStyle = keyboardHeight > 0
+    ? { top: STATUS_BAR + 4, bottom: keyboardHeight + 8 }
+    : { bottom: BOTTOM_GAP, maxHeight: height * 0.68 };
+
+  const trimmedOutput = agentOutput
+    ? agentOutput.split('\n').slice(-60).join('\n').trim()
+    : '';
 
   return (
-    <View
-      pointerEvents="box-none"
-      style={[styles.overlayWrap, keyboardHeight > 0 && { bottom: keyboardHeight }]}
-    >
-      <AdaptiveGlass style={styles.overlay}>
-        {/* Tab / expand row */}
-        <View style={styles.tabRow}>
-          <Pressable onPress={() => setPanelOpen((v) => !v)} style={styles.chevron}>
-            <Text style={styles.chevronText}>{panelOpen ? '▾' : '▸'}</Text>
+    <View pointerEvents="box-none" style={styles.root}>
+      <AdaptiveGlass style={[styles.sheet, sheetStyle]}>
+        {/* Header */}
+        <View style={styles.header}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+            onPress={() => setExpanded(false)}
+            style={styles.closeBtn}
+          >
+            <Text style={styles.closeText}>✕</Text>
           </Pressable>
-          <Pressable onPress={() => openTab('agent')} style={styles.tabBtn}>
-            <Text style={[styles.tabText, panelOpen && tab === 'agent' && styles.tabTextActive]}>
-              Agent
-            </Text>
-          </Pressable>
-          <Pressable onPress={() => openTab('git')} style={styles.tabBtn}>
-            <Text style={[styles.tabText, panelOpen && tab === 'git' && styles.tabTextActive]}>
-              Git{gitFiles.length ? ` (${gitFiles.length})` : ''}
-            </Text>
-          </Pressable>
+          <Text numberOfLines={1} style={styles.headerTitle}>
+            {gitBranch || 'slouch'}
+          </Text>
+          <Text style={styles.headerStatus}>{bridgeReady ? 'Connected' : 'Offline'}</Text>
+          <View style={[styles.dot, { backgroundColor: dotColor }]} />
         </View>
 
-        {panelOpen ? (
-          <View style={[styles.panel, { maxHeight: panelMaxHeight }]}>
-            {tab === 'agent' ? (
-              <ScrollView
-                ref={outputRef}
-                style={styles.panelScroll}
-                onContentSizeChange={() => outputRef.current?.scrollToEnd({ animated: false })}
-              >
-                <Text selectable style={styles.mono}>
-                  {agentOutput || 'Waiting for agent output…'}
-                </Text>
-              </ScrollView>
-            ) : (
-              <ScrollView style={styles.panelScroll} keyboardShouldPersistTaps="handled">
-                <Text style={styles.gitBranch}>⎇ {gitBranch || '—'}</Text>
+        <View style={styles.contentRow}>
+          <View style={styles.sideBar}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Chat"
+              onPress={() => setTab('chat')}
+              style={[styles.sideBtn, tab === 'chat' && styles.sideBtnActive]}
+            >
+              <Text style={styles.sideIcon}>⌁</Text>
+              <Text style={styles.sideLabel}>Chat</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Changes"
+              onPress={() => setTab('changes')}
+              style={[styles.sideBtn, tab === 'changes' && styles.sideBtnActive]}
+            >
+              <Text style={styles.sideIcon}>∆</Text>
+              <Text style={styles.sideLabel}>
+                {gitFiles.length ? `Files ${gitFiles.length}` : 'Files'}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Agents"
+              onPress={() => setTab('agents')}
+              style={[styles.sideBtn, tab === 'agents' && styles.sideBtnActive]}
+            >
+              <Text style={styles.sideIcon}>*</Text>
+              <Text style={styles.sideLabel}>Agents</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Connection"
+              onPress={() => setTab('connection')}
+              style={[styles.sideBtn, tab === 'connection' && styles.sideBtnActive]}
+            >
+              <Text style={styles.sideIcon}>•</Text>
+              <Text style={styles.sideLabel}>Link</Text>
+            </Pressable>
+          </View>
 
+          <View style={styles.mainPane}>
+            <View style={styles.paneHeader}>
+              <Text style={styles.paneTitle}>
+                {tab === 'chat'
+                  ? 'Chat'
+                  : tab === 'changes'
+                    ? 'Changes'
+                    : tab === 'agents'
+                      ? 'Agents'
+                      : 'Connection'}
+              </Text>
+              {tab === 'chat' ? (
+                <Pressable onPress={newChat} style={styles.newBtn} hitSlop={8}>
+                  <Text style={styles.newText}>New</Text>
+                </Pressable>
+              ) : null}
+            </View>
+
+            {tab === 'chat' ? (
+              <ScrollView ref={chatRef} style={styles.body} contentContainerStyle={styles.bodyContent}>
+                {messages.length === 0 && !trimmedOutput ? (
+                  <View style={styles.empty}>
+                    <Text style={styles.emptyText}>Send a prompt to start coding</Text>
+                  </View>
+                ) : (
+                  <>
+                    {messages.map((m, i) => (
+                      <View key={i} style={styles.userBubble}>
+                        <Text style={styles.userText} selectable>
+                          {m}
+                        </Text>
+                      </View>
+                    ))}
+                    {trimmedOutput ? (
+                      <Text style={styles.agentText} selectable>
+                        {trimmedOutput}
+                      </Text>
+                    ) : null}
+                  </>
+                )}
+              </ScrollView>
+            ) : tab === 'changes' ? (
+              <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
                 <View style={styles.gitInputRow}>
                   <TextInput
                     autoCapitalize="none"
@@ -475,83 +608,114 @@ export function SlouchOverlay() {
                     style={styles.gitInput}
                   />
                   <Pressable onPress={gitCommit} style={styles.gitBtn}>
-                    <Text style={styles.gitBtnText}>Commit all</Text>
+                    <Text style={styles.gitBtnText}>Commit</Text>
+                  </Pressable>
+                  <Pressable onPress={gitPush} disabled={pushing} style={styles.gitBtn}>
+                    <Text style={styles.gitBtnText}>{pushing ? '...' : 'Push'}</Text>
                   </Pressable>
                 </View>
 
-                <Pressable onPress={refreshGit} style={styles.gitRefresh}>
-                  <Text style={styles.gitRefreshText}>↻ Refresh</Text>
-                </Pressable>
-
-                {gitMsg ? <Text style={styles.gitStatusMsg}>{gitMsg}</Text> : null}
+                <View style={styles.gitFooter}>
+                  <Pressable onPress={refreshGit} hitSlop={8}>
+                    <Text style={styles.refreshText}>↻ Refresh</Text>
+                  </Pressable>
+                  {gitMsg ? <Text style={styles.gitStatusMsg}>{gitMsg}</Text> : null}
+                </View>
               </ScrollView>
+            ) : tab === 'agents' ? (
+              <View style={styles.statusPane}>
+                <View style={styles.healthCard}>
+                  <View style={[styles.healthDot, { backgroundColor: bridgeReady ? '#30d158' : '#8e8e93' }]} />
+                  <View style={styles.healthCopy}>
+                    <Text style={styles.healthTitle}>Coding agent</Text>
+                    <Text style={styles.healthBody}>
+                      {bridgeReady
+                        ? `Ready on ${bridgeTarget || 'your Mac'}`
+                        : 'Not reachable from this preview.'}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.healthCard}>
+                  <View style={[styles.healthDot, { backgroundColor: sendState === 'sending' ? '#ffcc00' : '#30d158' }]} />
+                  <View style={styles.healthCopy}>
+                    <Text style={styles.healthTitle}>Current task</Text>
+                    <Text style={styles.healthBody}>
+                      {sendState === 'sending' ? 'Working on your prompt.' : 'No active prompt.'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.panelHint}>
+                  Next this becomes usage, weekly spend, agent availability, and which app each agent is attached to.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.statusPane}>
+                <View style={styles.healthCard}>
+                  <View style={[styles.healthDot, { backgroundColor: bridgeReady ? '#30d158' : '#ff453a' }]} />
+                  <View style={styles.healthCopy}>
+                    <Text style={styles.healthTitle}>Mac link</Text>
+                    <Text style={styles.healthBody}>
+                      {bridgeReady ? 'Your phone can reach the Slouch bridge.' : 'Your phone cannot reach the Slouch bridge yet.'}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.healthCard}>
+                  <View style={[styles.healthDot, { backgroundColor: base ? '#30d158' : '#8e8e93' }]} />
+                  <View style={styles.healthCopy}>
+                    <Text style={styles.healthTitle}>Preview route</Text>
+                    <Text style={styles.healthBody}>
+                      {base ? 'Auto-detected from the preview connection.' : 'Waiting for a preview connection.'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.fieldLabel}>Advanced address</Text>
+                <TextInput
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  value={bridgeUrl}
+                  onChangeText={setBridgeUrl}
+                  placeholder="http://your-mac-ip:8081/slouch"
+                  placeholderTextColor="rgba(255,255,255,0.4)"
+                  style={styles.settingsInput}
+                />
+                <Text selectable style={styles.panelHint}>
+                  Slouch normally fills this in for you. Change it only if the app says the Mac link is offline.
+                </Text>
+              </View>
             )}
           </View>
-        ) : null}
-
-        <View style={styles.statusRow}>
-          <View
-            style={[
-              styles.statusDot,
-              sendState === 'sent' && styles.statusDotSent,
-              sendState === 'error' && styles.statusDotError,
-            ]}
-          />
-          <Text selectable numberOfLines={1} style={styles.statusText}>
-            {message}
-          </Text>
         </View>
 
-        <TextInput
-          multiline
-          value={prompt}
-          onChangeText={(value) => {
-            setPrompt(value);
-            if (sendState !== 'sending') setSendState('idle');
-          }}
-          placeholder="Ask the agent to change this app..."
-          placeholderTextColor="rgba(255,255,255,0.52)"
-          returnKeyType="default"
-          style={styles.promptInput}
-        />
+        {message ? <Text style={styles.statusMsg}>{message}</Text> : null}
 
-        <View style={styles.bridgeRow}>
+        {/* Composer */}
+        <View style={styles.composer}>
+          <Pressable onPress={() => setTab('connection')} style={styles.plusBtn} hitSlop={6}>
+            <Text style={styles.plusText}>＋</Text>
+          </Pressable>
           <TextInput
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={bridgeUrl}
-            onChangeText={setBridgeUrl}
-            placeholder="http://your-mac-ip:8081/slouch"
+            multiline
+            value={prompt}
+            onChangeText={setPrompt}
+            placeholder="Ask the agent…"
             placeholderTextColor="rgba(255,255,255,0.45)"
-            style={styles.bridgeInput}
+            style={styles.composerInput}
           />
-          <AdaptiveGlass
-            interactive
-            style={[styles.micGlass, recording && styles.micGlassActive]}
+          <Pressable onPress={toggleMic} style={styles.iconBtn} hitSlop={6}>
+            <Text style={styles.iconText}>{recording ? '■' : '🎤'}</Text>
+          </Pressable>
+          <Pressable
+            onPress={sendPrompt}
+            disabled={sendState === 'sending'}
+            style={styles.sendBtn}
+            hitSlop={6}
           >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={recording ? 'Stop dictation' : 'Dictate a prompt'}
-              onPress={toggleMic}
-              style={styles.micButton}
-            >
-              <Text style={styles.micText}>{recording ? '■' : '🎤'}</Text>
-            </Pressable>
-          </AdaptiveGlass>
-          <AdaptiveGlass interactive style={styles.sendGlass}>
-            <Pressable
-              accessibilityRole="button"
-              disabled={sendState === 'sending'}
-              onPress={sendPrompt}
-              style={styles.sendButton}
-            >
-              {sendState === 'sending' ? (
-                <ActivityIndicator color="#07111f" />
-              ) : (
-                <Text style={styles.sendText}>Send</Text>
-              )}
-            </Pressable>
-          </AdaptiveGlass>
+            {sendState === 'sending' ? (
+              <ActivityIndicator color="#07111f" />
+            ) : (
+              <Text style={styles.sendArrow}>↑</Text>
+            )}
+          </Pressable>
         </View>
       </AdaptiveGlass>
     </View>
@@ -559,74 +723,184 @@ export function SlouchOverlay() {
 }
 
 const styles = StyleSheet.create({
-  overlayWrap: {
+  root: {
     position: 'absolute',
+    top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    padding: 12,
-    paddingBottom: 18,
+    alignItems: 'center',
   },
-  overlay: {
-    gap: 10,
+  collapsedRoot: {
+    justifyContent: 'flex-end',
+    paddingBottom: BOTTOM_GAP,
+  },
+  // Collapsed pill
+  pillGlass: {
+    overflow: 'hidden',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: '#05070a',
+  },
+  pill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  pillText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  dot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  // Expanded sheet
+  sheet: {
+    position: 'absolute',
+    left: 8,
+    right: 8,
     overflow: 'hidden',
     borderRadius: 28,
     borderCurve: 'continuous',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.28)',
-    backgroundColor: 'rgba(9,18,32,0.72)',
-    padding: 12,
+    borderColor: 'rgba(255,255,255,0.16)',
+    backgroundColor: '#05070a',
+    padding: 14,
+    gap: 10,
   },
-  tabRow: {
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 2,
+    gap: 10,
   },
-  chevron: {
+  closeBtn: {
     width: 28,
     height: 28,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
-  chevronText: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 14,
+  closeText: {
+    color: '#ffffff',
+    fontSize: 13,
     fontWeight: '900',
   },
-  tabBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  headerTitle: {
+    flex: 1,
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
   },
-  tabText: {
-    color: 'rgba(255,255,255,0.5)',
+  headerStatus: {
+    color: 'rgba(255,255,255,0.56)',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  contentRow: {
+    flexDirection: 'row',
+    gap: 10,
+    minHeight: 210,
+  },
+  sideBar: {
+    width: 66,
+    gap: 8,
+  },
+  sideBtn: {
+    minHeight: 50,
+    borderRadius: 16,
+    borderCurve: 'continuous',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  sideBtnActive: {
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  sideIcon: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  sideLabel: {
+    color: 'rgba(255,255,255,0.76)',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  mainPane: {
+    flex: 1,
+    minWidth: 0,
+    gap: 8,
+  },
+  paneHeader: {
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  paneTitle: {
+    flex: 1,
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  newBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  newText: {
+    color: '#ffffff',
     fontSize: 13,
     fontWeight: '800',
   },
-  tabTextActive: {
-    color: '#ffffff',
+  body: {
+    flex: 1,
+    minHeight: 120,
   },
-  panel: {
-    borderRadius: 16,
+  bodyContent: {
+    paddingVertical: 8,
+    gap: 10,
+  },
+  empty: {
+    paddingVertical: 48,
+    alignItems: 'center',
+  },
+  emptyText: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  userBubble: {
+    alignSelf: 'flex-end',
+    maxWidth: '85%',
+    backgroundColor: '#1e3a5f',
+    borderRadius: 18,
     borderCurve: 'continuous',
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    padding: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  panelScroll: {
-    flexGrow: 0,
+  userText: {
+    color: '#ffffff',
+    fontSize: 15,
+    lineHeight: 20,
   },
-  mono: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 11,
-    lineHeight: 15,
+  agentText: {
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 12,
+    lineHeight: 17,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
-  gitBranch: {
-    color: '#7dd3fc',
-    fontSize: 14,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
+  // Changes tab
   gitInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -656,7 +930,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   gitClean: {
-    color: 'rgba(255,255,255,0.55)',
+    color: 'rgba(255,255,255,0.5)',
     fontSize: 13,
     paddingVertical: 6,
   },
@@ -670,105 +944,139 @@ const styles = StyleSheet.create({
     color: '#fbbf24',
     fontWeight: '900',
   },
-  gitRefresh: {
-    paddingVertical: 6,
+  gitFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 8,
   },
-  gitRefreshText: {
+  refreshText: {
     color: '#7dd3fc',
     fontSize: 13,
     fontWeight: '800',
   },
   gitStatusMsg: {
-    color: 'rgba(255,255,255,0.65)',
+    flex: 1,
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 12,
+  },
+  settingsInput: {
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    paddingHorizontal: 12,
+  },
+  statusPane: {
+    gap: 9,
+    paddingTop: 4,
+  },
+  healthCard: {
+    flexDirection: 'row',
+    gap: 10,
+    borderRadius: 16,
+    borderCurve: 'continuous',
+    backgroundColor: 'rgba(255,255,255,0.055)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    padding: 12,
+  },
+  healthDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 4,
+  },
+  healthCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  healthTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  healthBody: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  fieldLabel: {
+    color: 'rgba(255,255,255,0.64)',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  panelHint: {
+    color: 'rgba(255,255,255,0.56)',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  statusMsg: {
+    color: '#fca5a5',
     fontSize: 12,
     fontWeight: '600',
-  },
-  statusRow: {
-    minHeight: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
     paddingHorizontal: 4,
   },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#94a3b8',
-  },
-  statusDotSent: {
-    backgroundColor: '#22c55e',
-  },
-  statusDotError: {
-    backgroundColor: '#fb7185',
-  },
-  statusText: {
-    flex: 1,
-    color: 'rgba(255,255,255,0.74)',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  promptInput: {
-    minHeight: 58,
-    maxHeight: 122,
-    borderRadius: 20,
-    borderCurve: 'continuous',
-    backgroundColor: 'rgba(255,255,255,0.11)',
-    color: '#ffffff',
-    fontSize: 17,
-    lineHeight: 22,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
-  },
-  bridgeRow: {
+  // Composer
+  composer: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    alignItems: 'flex-end',
+    gap: 8,
   },
-  bridgeInput: {
-    flex: 1,
-    height: 46,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.09)',
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 13,
-    fontWeight: '700',
-    paddingHorizontal: 14,
-  },
-  micGlass: {
-    overflow: 'hidden',
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-  },
-  micGlassActive: {
-    backgroundColor: '#fb7185',
-  },
-  micButton: {
-    width: 46,
-    height: 46,
+  plusBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
   },
-  micText: {
-    fontSize: 18,
+  plusText: {
     color: '#ffffff',
-    fontWeight: '900',
+    fontSize: 20,
+    fontWeight: '500',
+    marginTop: -2,
   },
-  sendGlass: {
-    overflow: 'hidden',
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.82)',
+  composerInput: {
+    flex: 1,
+    minHeight: 44,
+    maxHeight: 110,
+    borderRadius: 22,
+    borderCurve: 'continuous',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    color: '#ffffff',
+    fontSize: 16,
+    lineHeight: 21,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
   },
-  sendButton: {
-    minWidth: 78,
-    height: 46,
+  iconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 18,
+    backgroundColor: 'rgba(255,255,255,0.1)',
   },
-  sendText: {
-    color: '#07111f',
+  iconText: {
+    color: '#ffffff',
     fontSize: 16,
     fontWeight: '900',
+  },
+  sendBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#ffffff',
+  },
+  sendArrow: {
+    color: '#07111f',
+    fontSize: 20,
+    fontWeight: '900',
+    marginTop: -1,
   },
 });

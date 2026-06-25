@@ -34,7 +34,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, BoundaryState>
             {this.state.error.message}
           </Text>
           <Text style={styles.fallbackHint}>
-            Use the prompt bar below to ask the agent to fix it — the overlay is
+            Use the Slouch pill to ask the agent to fix it — the overlay is
             still alive.
           </Text>
         </View>

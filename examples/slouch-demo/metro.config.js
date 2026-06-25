@@ -203,6 +203,16 @@ async function gitCommit(message) {
   return commit.stdout.trim();
 }
 
+async function gitPush() {
+  const upstream = await git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  const args = upstream.code === 0
+    ? ['push']
+    : ['push', '-u', 'origin', (await gitStatus()).branch];
+  const res = await git(args);
+  if (res.code !== 0) throw new Error(res.stderr.trim() || res.stdout.trim() || 'git push failed');
+  return res.stdout.trim() || res.stderr.trim() || 'Pushed.';
+}
+
 async function gitSwitch(name, create) {
   const res = await git(create ? ['switch', '-c', name] : ['switch', name]);
   if (res.code !== 0) throw new Error(res.stderr.trim() || 'git switch failed');
@@ -262,6 +272,11 @@ async function handleSlouch(request, response, pathname) {
       return;
     }
     sendJson(response, 200, { ok: true, result: await gitCommit(message) });
+    return;
+  }
+
+  if (request.method === 'POST' && pathname === '/slouch/git/push') {
+    sendJson(response, 200, { ok: true, result: await gitPush() });
     return;
   }
 

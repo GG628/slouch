@@ -96,10 +96,10 @@ Then from your phone:
 tmux attach -t slouch-demo
 ```
 
-Open the demo in Expo Go and use the in-app Slouch bar to send prompts straight
-back to the `claude` tmux window. The bridge is built into Metro, so it just works
-over LAN and `--tunnel` (cellular) — the URL field auto-fills from the Metro
-connection.
+Open the demo in Expo Go and tap the bottom Slouch pill to open the chat sheet.
+Prompts go straight back to the `claude` tmux window. The bridge is built into
+Metro, so it just works over LAN and `--tunnel` (cellular) — the Connection screen
+auto-fills the URL from the Metro connection.
 
 In any Expo project:
 

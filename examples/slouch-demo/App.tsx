@@ -1,5 +1,5 @@
 // This is "your app" — plain Expo/React Native, no Slouch plumbing.
-// Edit it freely (or prompt the agent to). The prompt bar lives in slouch/ and
+// Edit it freely (or prompt the agent to). The Slouch overlay lives in slouch/ and
 // floats on top no matter what you do in here.
 import { useState } from 'react';
 import {
@@ -34,8 +34,8 @@ export default function App() {
             Edit me from the sofa.
           </Text>
           <Text selectable style={styles.body}>
-            Everything on this screen is plain app code. Use the prompt bar at the
-            bottom to ask the agent to change it — and watch it reload in your hand.
+            Everything on this screen is plain app code. Tap the bottom Slouch pill
+            to ask the agent to change it — and watch it reload in your hand.
           </Text>
         </View>
 

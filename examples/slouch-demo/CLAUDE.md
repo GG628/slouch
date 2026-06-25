@@ -7,7 +7,7 @@ rebuilds).
 ## Do not touch the overlay infrastructure
 
 These files are Slouch plumbing, **not** app code. Never edit them in response to a
-user's app request — editing them can break the very prompt bar the user is typing
+user's app request — editing them can break the very overlay the user is typing
 into:
 
 - `index.js` (entry point)
