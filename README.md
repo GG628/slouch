@@ -4,7 +4,7 @@
 
 <h1 align="center">Slouch</h1>
 
-<p align="center"><i>Slouch on the sofa. Tinker with apps. Never get up.</i></p>
+<p align="center"><i>Slouch on the sofa. Tinker with apps.</i></p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-2f6f8f" alt="MIT" />
