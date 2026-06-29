@@ -47,8 +47,8 @@ Phone: swipe to Expo Go ◄─────────────────�
 
 - **`slouch start`** — one command boots (or re-attaches) a tmux session per project,
   with Metro, both agents, a shell, and a keep-awake window already running.
-- **`slouch demo`** — boots the bundled demo app from anywhere, ready for the
-  in-app prompt overlay.
+- **`slouch demo`** — boots a private working copy of the bundled demo from
+  anywhere, so agent experiments never dirty the Slouch repository.
 - **`slouch init`** — drops Expo-tuned `CLAUDE.md` + `AGENTS.md` into a project so
   both agents understand the live-reload contract (don't break Fast Refresh, flag
   changes that need a native rebuild, never restart Metro).
@@ -72,22 +72,24 @@ Requires `tmux` (`brew install tmux`). Update later with `git pull`.
 
 ## Use
 
-To prove the loop without dragging in auth, API calls, or native config, start
-with the bundled demo app:
+To prove the loop without dragging in auth, API calls, or native config, start a
+private copy of the bundled demo:
 
 ```bash
-cd examples/slouch-demo
-npm install       # first run only
-source ../../shell/expo-dev.zsh
-slouch init
-slouch doctor
-slouch start
+slouch demo
 ```
 
-After install, the shorter phone-friendly path is:
+Use the tunnel only when the phone is away from the Mac's network:
 
 ```bash
 slouch demo --tunnel
+```
+
+The working copy lives at `~/.slouch/demo-workspace`. Recreate it from the
+tracked template whenever you want a clean slate:
+
+```bash
+slouch demo --reset
 ```
 
 Then from your phone:
@@ -98,8 +100,9 @@ tmux attach -t slouch-demo
 
 Open the demo in Expo Go and tap the bottom Slouch pill to open the chat sheet.
 Prompts go straight back to the `claude` tmux window. The bridge is built into
-Metro, so it just works over LAN and `--tunnel` (cellular) — the Connection screen
-auto-fills the URL from the Metro connection.
+Metro, so it just works over LAN and `--tunnel` (cellular) — the bridge address
+auto-fills from the Metro connection. Raw terminal and connection details stay
+collapsed under **Activity** unless you need them.
 
 In any Expo project:
 

@@ -1,32 +1,27 @@
-// Slouch overlay — a floating status pill that expands into mission control.
+// Slouch overlay — a small prompt surface that stays outside app code.
 //
-// This file is Slouch *infrastructure*, not app code. It is mounted at the root
-// (see index.js) as a sibling of your app, so it floats on top and survives any
-// edit the agent makes to App.tsx. Don't move it back into your app — keeping it
-// here is what makes it unbreakable.
-//
-// Collapsed: a small pill at the bottom with a status light (green = bridge ready).
-// Expanded:  a bottom sheet — chat, changes, agents, connection — then collapse
-//            and carry on using the app behind it.
-import Constants from 'expo-constants';
-import { BlurView } from 'expo-blur';
-import {
-  GlassView,
-  isGlassEffectAPIAvailable,
-  isLiquidGlassAvailable,
-} from 'expo-glass-effect';
+// The primary view is intentionally conversation-first. Terminal output and
+// connection diagnostics are available under Activity, but never compete with
+// the prompt and the result the user is trying to see in the app.
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
+import { BlurView } from 'expo-blur';
+import Constants from 'expo-constants';
 import {
   documentDirectory,
   EncodingType,
   readAsStringAsync,
   writeAsStringAsync,
 } from 'expo-file-system/legacy';
+import {
+  GlassView,
+  isGlassEffectAPIAvailable,
+  isLiquidGlassAvailable,
+} from 'expo-glass-effect';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -43,12 +38,49 @@ import {
 } from 'react-native';
 
 type SendState = 'idle' | 'sending' | 'sent' | 'error';
-type Tab = 'chat' | 'changes' | 'agents' | 'connection';
 type GitFile = { status: string; path: string };
 
 const STATE_FILE = `${documentDirectory ?? ''}slouch-overlay-state.json`;
 const STATUS_BAR = Constants.statusBarHeight ?? 44;
 const BOTTOM_GAP = Platform.OS === 'ios' ? 28 : 18;
+
+function cleanTerminalLine(line: string) {
+  return line
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/[⏺⎿✻●❯⏵─]/g, '')
+    .trim();
+}
+
+function shortFileName(value: string) {
+  const path = value.trim().replace(/^['"]|['"]$/g, '');
+  return path.split('/').filter(Boolean).pop() || path;
+}
+
+function latestCompletion(output: string) {
+  const lines = output.split('\n').map(cleanTerminalLine).filter(Boolean);
+  const index = lines.findLastIndex((line) => /(?:Cogitated|Worked|Finished) for \d+/i.test(line));
+  if (index < 0) return null;
+  return {
+    label: lines[index],
+    signature: lines.slice(Math.max(0, index - 2), index + 1).join('|'),
+  };
+}
+
+function summarizeAgentOutput(output: string) {
+  const lines = output.split('\n').map(cleanTerminalLine).filter(Boolean);
+  for (const line of [...lines].reverse()) {
+    const tool = line.match(/\b(Read|Update|Edit|Write|Bash|Grep|Glob|Search|Task)\(([^)]*)\)/i);
+    if (!tool) continue;
+    const name = tool[1].toLowerCase();
+    const value = shortFileName(tool[2].split(',')[0]);
+    if (['update', 'edit', 'write'].includes(name)) return `Editing ${value || 'the app'}`;
+    if (name === 'read') return `Reading ${value || 'the project'}`;
+    if (['grep', 'glob', 'search'].includes(name)) return 'Searching the project';
+    if (name === 'bash') return 'Checking the work';
+    if (name === 'task') return 'Working through the task';
+  }
+  return 'Thinking';
+}
 
 function authorityFromUrl(value?: string) {
   if (!value) return '';
@@ -78,12 +110,10 @@ function defaultBridgeUrl() {
     authorityFromUrl(constants.manifest?.debuggerHost);
 
   if (!authority) return '';
-
   const hostname = authority.split(':')[0];
-  if (hostname.endsWith('.exp.direct')) {
-    return `https://${hostname}/slouch`;
-  }
-  return `http://${authority}/slouch`;
+  return hostname.endsWith('.exp.direct')
+    ? `https://${hostname}/slouch`
+    : `http://${authority}/slouch`;
 }
 
 function canUseGlass() {
@@ -123,40 +153,42 @@ function AdaptiveGlass({
 
 export function SlouchOverlay() {
   const [expanded, setExpanded] = useState(false);
-  const [tab, setTab] = useState<Tab>('chat');
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [rawOutputOpen, setRawOutputOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [bridgeUrl, setBridgeUrl] = useState(defaultBridgeUrl);
   const [sendState, setSendState] = useState<SendState>('idle');
-  const [message, setMessage] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
   const [bridgeReady, setBridgeReady] = useState(false);
-  const [bridgeTarget, setBridgeTarget] = useState('');
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [recording, setRecording] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-
   const [messages, setMessages] = useState<string[]>([]);
   const [agentOutput, setAgentOutput] = useState('');
   const [gitBranch, setGitBranch] = useState('');
   const [gitFiles, setGitFiles] = useState<GitFile[]>([]);
-  const [commitMsg, setCommitMsg] = useState('');
-  const [branchName, setBranchName] = useState('');
-  const [gitMsg, setGitMsg] = useState('');
-  const [pushing, setPushing] = useState(false);
+  const [agentActive, setAgentActive] = useState(false);
+  const [currentActivity, setCurrentActivity] = useState('Thinking');
+  const [activitySteps, setActivitySteps] = useState<string[]>([]);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const chatRef = useRef<ScrollView>(null);
+  const lastOutputRef = useRef('');
+  const completionBaselineRef = useRef('');
   const { height } = useWindowDimensions();
   const base = bridgeUrl.trim().replace(/\/$/, '');
 
-  // ---- persistence: keep the draft prompt across reloads --------------------
   useEffect(() => {
     (async () => {
       try {
         const raw = await readAsStringAsync(STATE_FILE);
-        const saved = JSON.parse(raw) as { prompt?: string };
-        if (typeof saved.prompt === 'string' && saved.prompt) setPrompt(saved.prompt);
+        const saved = JSON.parse(raw) as { prompt?: string; bridgeUrl?: string };
+        if (typeof saved.prompt === 'string') setPrompt(saved.prompt);
+        if (typeof saved.bridgeUrl === 'string' && saved.bridgeUrl) {
+          setBridgeUrl(saved.bridgeUrl);
+        }
       } catch {
-        // none yet
+        // First run has no state file.
       }
       setHydrated(true);
     })();
@@ -165,17 +197,18 @@ export function SlouchOverlay() {
   useEffect(() => {
     if (!hydrated) return;
     const timer = setTimeout(() => {
-      writeAsStringAsync(STATE_FILE, JSON.stringify({ prompt })).catch(() => {});
+      writeAsStringAsync(STATE_FILE, JSON.stringify({ prompt, bridgeUrl })).catch(() => {});
     }, 300);
     return () => clearTimeout(timer);
-  }, [prompt, hydrated]);
+  }, [prompt, bridgeUrl, hydrated]);
 
-  // ---- keyboard height ------------------------------------------------------
   useEffect(() => {
     const showEvent =
       Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, (e) => setKeyboardHeight(e.endCoordinates.height));
+    const showSub = Keyboard.addListener(showEvent, (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+    });
     const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
     return () => {
       showSub.remove();
@@ -183,7 +216,6 @@ export function SlouchOverlay() {
     };
   }, []);
 
-  // ---- status light: ping the bridge ----------------------------------------
   useEffect(() => {
     let active = true;
     const ping = async () => {
@@ -192,91 +224,114 @@ export function SlouchOverlay() {
         return;
       }
       try {
-        const r = await fetch(`${base}/health`);
-        const body = (await r.json().catch(() => ({}))) as { target?: string };
-        if (active) {
-          setBridgeReady(r.ok);
-          if (typeof body.target === 'string') setBridgeTarget(body.target);
-        }
+        const response = await fetch(`${base}/health`);
+        if (active) setBridgeReady(response.ok);
       } catch {
-        if (active) {
-          setBridgeReady(false);
-          setBridgeTarget('');
-        }
+        if (active) setBridgeReady(false);
       }
     };
     ping();
-    const id = setInterval(ping, 4000);
+    const timer = setInterval(ping, 4000);
     return () => {
       active = false;
-      clearInterval(id);
+      clearInterval(timer);
     };
   }, [base]);
 
-  // ---- poll the agent's output while the Chat tab is open -------------------
   useEffect(() => {
-    if (!expanded || tab !== 'chat' || !base) return;
+    if (!expanded || !base) return;
     let active = true;
-    const tick = async () => {
+    const refresh = async () => {
       try {
-        const res = await fetch(`${base}/output`);
-        const body = (await res.json()) as { text?: string };
-        if (active && typeof body.text === 'string') setAgentOutput(body.text);
+        const response = await fetch(`${base}/git/status`);
+        const body = (await response.json()) as { branch?: string; files?: GitFile[] };
+        if (active && response.ok) {
+          setGitBranch(body.branch ?? '');
+          setGitFiles(body.files ?? []);
+        }
       } catch {
-        // transient
+        // Connection state is already handled by the health check.
       }
     };
-    tick();
-    const id = setInterval(tick, 1500);
+    refresh();
+    const timer = setInterval(refresh, 3000);
     return () => {
       active = false;
-      clearInterval(id);
+      clearInterval(timer);
     };
-  }, [expanded, tab, base]);
+  }, [expanded, base]);
 
-  async function refreshGit() {
-    if (!base) {
-      setGitMsg('Connect to your Mac first.');
+  useEffect(() => {
+    if (!expanded || !base) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const response = await fetch(`${base}/output`);
+        const body = (await response.json()) as { text?: string };
+        if (active && typeof body.text === 'string') setAgentOutput(body.text);
+      } catch {
+        // Activity is optional; the prompt path can remain usable.
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, 1500);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [expanded, base]);
+
+  useEffect(() => {
+    if (!agentOutput || agentOutput === lastOutputRef.current) return;
+    lastOutputRef.current = agentOutput;
+    if (!agentActive && sendState !== 'sending' && sendState !== 'sent') return;
+
+    const completion = latestCompletion(agentOutput);
+    if (completion && completion.signature !== completionBaselineRef.current) {
+      completionBaselineRef.current = completion.signature;
+      setAgentActive(false);
+      setSendState('idle');
+      setCurrentActivity(completion.label);
+      setStatusMessage('Finished. The app should now be up to date.');
+      setActivitySteps((steps) => [
+        ...steps.filter((step) => step !== completion.label),
+        completion.label,
+      ].slice(-4));
       return;
     }
-    try {
-      const res = await fetch(`${base}/git/status`);
-      const body = (await res.json()) as { branch?: string; files?: GitFile[]; error?: string };
-      if (!res.ok) throw new Error(body.error || `Bridge returned ${res.status}`);
-      setGitBranch(body.branch ?? '');
-      setGitFiles(body.files ?? []);
-      setGitMsg(`${body.files?.length ?? 0} changed file(s)`);
-    } catch (error) {
-      setGitMsg(error instanceof Error ? error.message : 'git status failed');
-    }
-  }
 
-  // Load branch name on open (for the header) + changes when the tab opens.
-  useEffect(() => {
-    if (expanded && base) refreshGit();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, tab, base]);
+    const summary = summarizeAgentOutput(agentOutput);
+    setAgentActive(true);
+    setCurrentActivity(summary);
+    setActivitySteps((steps) => {
+      if (steps[steps.length - 1] === summary) return steps;
+      return [...steps, summary].slice(-4);
+    });
+  }, [agentOutput, agentActive, sendState]);
 
-  // Keep chat scrolled to the newest content.
   useEffect(() => {
-    if (expanded && tab === 'chat') {
-      const t = setTimeout(() => chatRef.current?.scrollToEnd({ animated: true }), 60);
-      return () => clearTimeout(t);
-    }
-  }, [agentOutput, messages, expanded, tab]);
+    if (!expanded) return;
+    const timer = setTimeout(() => chatRef.current?.scrollToEnd({ animated: true }), 60);
+    return () => clearTimeout(timer);
+  }, [messages, sendState, currentActivity, detailsOpen, expanded]);
 
   async function sendPrompt() {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) return;
-    if (!base) {
-      setMessage('Connect to your Mac first.');
+    if (!base || !bridgeReady) {
       setSendState('error');
-      setTab('connection');
+      setStatusMessage('Cannot reach the Mac. Open Activity to check the connection.');
+      setDetailsOpen(true);
       return;
     }
 
     setSendState('sending');
-    setMessage('');
+    setStatusMessage('');
+    setAgentActive(true);
+    setCurrentActivity('Starting...');
+    setActivitySteps([]);
+    completionBaselineRef.current = latestCompletion(agentOutput)?.signature ?? '';
+    lastOutputRef.current = agentOutput;
     try {
       const response = await fetch(`${base}/prompt`, {
         method: 'POST',
@@ -286,31 +341,34 @@ export function SlouchOverlay() {
       const body = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(body.error || `Bridge returned ${response.status}`);
 
-      setMessages((m) => [...m, trimmedPrompt]);
+      setMessages((current) => [...current, trimmedPrompt]);
       setPrompt('');
       setSendState('sent');
-      setTab('chat');
+      setCurrentActivity('Thinking');
     } catch (error) {
       setSendState('error');
-      setMessage(error instanceof Error ? error.message : 'Could not reach bridge.');
+      setStatusMessage(error instanceof Error ? error.message : 'Could not reach the Mac.');
     }
   }
 
   async function startRecording() {
     try {
-      const perm = await requestRecordingPermissionsAsync();
-      if (!perm.granted) {
-        setMessage('Microphone permission denied.');
+      const permission = await requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        setSendState('error');
+        setStatusMessage('Microphone permission denied.');
         return;
       }
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await recorder.prepareToRecordAsync();
       recorder.record();
       setRecording(true);
-      setMessage('Listening… tap to stop.');
+      setSendState('idle');
+      setStatusMessage('Listening...');
     } catch (error) {
       setRecording(false);
-      setMessage(error instanceof Error ? error.message : 'Could not start recording.');
+      setSendState('error');
+      setStatusMessage(error instanceof Error ? error.message : 'Could not start recording.');
     }
   }
 
@@ -320,13 +378,10 @@ export function SlouchOverlay() {
       setRecording(false);
       const uri = recorder.uri;
       if (!uri) throw new Error('No audio captured.');
-      if (!base) {
-        setMessage('Connect to your Mac first.');
-        setTab('connection');
-        return;
-      }
+      if (!base) throw new Error('Cannot reach the Mac.');
+
       setSendState('sending');
-      setMessage('Transcribing…');
+      setStatusMessage('Transcribing...');
       const audio = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
       const response = await fetch(`${base}/transcribe`, {
         method: 'POST',
@@ -335,110 +390,27 @@ export function SlouchOverlay() {
       });
       const body = (await response.json()) as { text?: string; error?: string };
       if (!response.ok) throw new Error(body.error || `Bridge returned ${response.status}`);
+
       const text = (body.text ?? '').trim();
       setSendState('idle');
-      if (!text) {
-        setMessage('Heard nothing — try again.');
-        return;
-      }
-      setPrompt((prev) => (prev ? `${prev} ${text}` : text));
-      setMessage('');
+      setStatusMessage(text ? '' : 'Heard nothing. Try again.');
+      if (text) setPrompt((current) => (current ? `${current} ${text}` : text));
     } catch (error) {
       setRecording(false);
       setSendState('error');
-      setMessage(error instanceof Error ? error.message : 'Transcription failed.');
-    }
-  }
-
-  function toggleMic() {
-    if (recording) stopAndTranscribe();
-    else startRecording();
-  }
-
-  function newChat() {
-    setMessages([]);
-    setAgentOutput('');
-    setMessage('');
-    setSendState('idle');
-  }
-
-  async function gitCommit() {
-    const msg = commitMsg.trim();
-    if (!msg) {
-      setGitMsg('Type a commit message.');
-      return;
-    }
-    setGitMsg('Committing…');
-    try {
-      const res = await fetch(`${base}/git/commit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg }),
-      });
-      const body = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(body.error || `Bridge returned ${res.status}`);
-      setCommitMsg('');
-      setGitMsg('Committed.');
-      refreshGit();
-    } catch (error) {
-      setGitMsg(error instanceof Error ? error.message : 'Commit failed.');
-    }
-  }
-
-  async function gitPush() {
-    if (!base) {
-      setGitMsg('Connect to your Mac first.');
-      setTab('connection');
-      return;
-    }
-    setPushing(true);
-    setGitMsg('Pushing…');
-    try {
-      const res = await fetch(`${base}/git/push`, { method: 'POST' });
-      const body = (await res.json()) as { result?: string; error?: string };
-      if (!res.ok) throw new Error(body.error || `Bridge returned ${res.status}`);
-      setGitMsg(body.result ?? 'Pushed.');
-      refreshGit();
-    } catch (error) {
-      setGitMsg(error instanceof Error ? error.message : 'Push failed.');
-    } finally {
-      setPushing(false);
-    }
-  }
-
-  async function gitSwitch(create: boolean) {
-    const name = branchName.trim();
-    if (!name) {
-      setGitMsg('Type a branch name.');
-      return;
-    }
-    setGitMsg(create ? 'Creating…' : 'Switching…');
-    try {
-      const res = await fetch(`${base}/git/switch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, create }),
-      });
-      const body = (await res.json()) as { result?: string; error?: string };
-      if (!res.ok) throw new Error(body.error || `Bridge returned ${res.status}`);
-      setBranchName('');
-      setGitMsg(body.result ?? 'Done.');
-      refreshGit();
-    } catch (error) {
-      setGitMsg(error instanceof Error ? error.message : 'Switch failed.');
+      setStatusMessage(error instanceof Error ? error.message : 'Transcription failed.');
     }
   }
 
   const dotColor =
     sendState === 'error'
-      ? '#fb7185'
+      ? '#ff453a'
       : sendState === 'sending'
-        ? '#fbbf24'
+        ? '#ffcc00'
         : bridgeReady
-          ? '#22c55e'
-          : '#64748b';
+          ? '#30d158'
+          : '#8e8e93';
 
-  // ---- collapsed pill -------------------------------------------------------
   if (!expanded) {
     return (
       <View pointerEvents="box-none" style={[styles.root, styles.collapsedRoot]}>
@@ -457,264 +429,186 @@ export function SlouchOverlay() {
     );
   }
 
-  // ---- expanded sheet -------------------------------------------------------
-  const sheetStyle = keyboardHeight > 0
-    ? { top: STATUS_BAR + 4, bottom: keyboardHeight + 8 }
-    : { bottom: BOTTOM_GAP, maxHeight: height * 0.68 };
-
-  const trimmedOutput = agentOutput
-    ? agentOutput.split('\n').slice(-60).join('\n').trim()
-    : '';
+  const sheetStyle =
+    keyboardHeight > 0
+      ? { top: STATUS_BAR + 4, bottom: keyboardHeight + 8 }
+      : { bottom: BOTTOM_GAP, height: Math.min(height * 0.72, 620) };
+  const activityOutput = agentOutput
+    .split('\n')
+    .slice(-18)
+    .join('\n')
+    .trim();
 
   return (
     <View pointerEvents="box-none" style={styles.root}>
       <AdaptiveGlass style={[styles.sheet, sheetStyle]}>
-        {/* Header */}
         <View style={styles.header}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Close"
+            accessibilityLabel="Close Slouch"
             onPress={() => setExpanded(false)}
-            style={styles.closeBtn}
+            style={styles.closeButton}
           >
-            <Text style={styles.closeText}>✕</Text>
+            <Text style={styles.closeText}>x</Text>
           </Pressable>
-          <Text numberOfLines={1} style={styles.headerTitle}>
-            {gitBranch || 'slouch'}
-          </Text>
-          <Text style={styles.headerStatus}>{bridgeReady ? 'Connected' : 'Offline'}</Text>
-          <View style={[styles.dot, { backgroundColor: dotColor }]} />
+          <View style={styles.titleGroup}>
+            <Text style={styles.title}>Slouch</Text>
+            <Text numberOfLines={1} style={styles.subtitle}>
+              {gitBranch || 'Your app'}
+            </Text>
+          </View>
+          <View style={styles.connection}>
+            <View style={[styles.dot, { backgroundColor: dotColor }]} />
+            <Text style={styles.connectionText}>{bridgeReady ? 'Connected' : 'Offline'}</Text>
+          </View>
         </View>
 
-        <View style={styles.contentRow}>
-          <View style={styles.sideBar}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Chat"
-              onPress={() => setTab('chat')}
-              style={[styles.sideBtn, tab === 'chat' && styles.sideBtnActive]}
-            >
-              <Text style={styles.sideIcon}>⌁</Text>
-              <Text style={styles.sideLabel}>Chat</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Changes"
-              onPress={() => setTab('changes')}
-              style={[styles.sideBtn, tab === 'changes' && styles.sideBtnActive]}
-            >
-              <Text style={styles.sideIcon}>∆</Text>
-              <Text style={styles.sideLabel}>
-                {gitFiles.length ? `Files ${gitFiles.length}` : 'Files'}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Agents"
-              onPress={() => setTab('agents')}
-              style={[styles.sideBtn, tab === 'agents' && styles.sideBtnActive]}
-            >
-              <Text style={styles.sideIcon}>*</Text>
-              <Text style={styles.sideLabel}>Agents</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Connection"
-              onPress={() => setTab('connection')}
-              style={[styles.sideBtn, tab === 'connection' && styles.sideBtnActive]}
-            >
-              <Text style={styles.sideIcon}>•</Text>
-              <Text style={styles.sideLabel}>Link</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.mainPane}>
-            <View style={styles.paneHeader}>
-              <Text style={styles.paneTitle}>
-                {tab === 'chat'
-                  ? 'Chat'
-                  : tab === 'changes'
-                    ? 'Changes'
-                    : tab === 'agents'
-                      ? 'Agents'
-                      : 'Connection'}
-              </Text>
-              {tab === 'chat' ? (
-                <Pressable onPress={newChat} style={styles.newBtn} hitSlop={8}>
-                  <Text style={styles.newText}>New</Text>
-                </Pressable>
-              ) : null}
+        <ScrollView
+          ref={chatRef}
+          style={styles.chat}
+          contentContainerStyle={styles.chatContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          {messages.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>What should we change?</Text>
             </View>
+          ) : (
+            messages.map((item, index) => (
+              <View key={`${index}-${item}`} style={styles.userBubble}>
+                <Text selectable style={styles.userText}>
+                  {item}
+                </Text>
+              </View>
+            ))
+          )}
 
-            {tab === 'chat' ? (
-              <ScrollView ref={chatRef} style={styles.body} contentContainerStyle={styles.bodyContent}>
-                {messages.length === 0 && !trimmedOutput ? (
-                  <View style={styles.empty}>
-                    <Text style={styles.emptyText}>Send a prompt to start coding</Text>
-                  </View>
-                ) : (
-                  <>
-                    {messages.map((m, i) => (
-                      <View key={i} style={styles.userBubble}>
-                        <Text style={styles.userText} selectable>
-                          {m}
-                        </Text>
-                      </View>
-                    ))}
-                    {trimmedOutput ? (
-                      <Text style={styles.agentText} selectable>
-                        {trimmedOutput}
-                      </Text>
-                    ) : null}
-                  </>
-                )}
-              </ScrollView>
-            ) : tab === 'changes' ? (
-              <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
-                <View style={styles.gitInputRow}>
+          {agentActive || sendState !== 'idle' || statusMessage ? (
+            <View style={styles.statusRow}>
+              {agentActive || sendState === 'sending' ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <View style={[styles.statusIcon, { backgroundColor: dotColor }]} />
+              )}
+              <Text style={[styles.statusText, sendState === 'error' && styles.errorText]}>
+                {sendState === 'error'
+                  ? statusMessage
+                  : sendState === 'sending'
+                    ? 'Sending...'
+                    : agentActive
+                      ? currentActivity
+                      : statusMessage}
+              </Text>
+            </View>
+          ) : null}
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={detailsOpen ? 'Hide activity' : 'Show activity'}
+            onPress={() => setDetailsOpen((open) => !open)}
+            style={styles.activityButton}
+          >
+            <Text style={styles.activityLabel}>
+              {detailsOpen ? 'Hide activity' : 'Activity'}
+            </Text>
+            <Text style={styles.activityMeta}>
+              {activitySteps.length
+                ? `${activitySteps.length} ${activitySteps.length === 1 ? 'step' : 'steps'}`
+                : gitFiles.length
+                  ? `${gitFiles.length} changed`
+                  : 'Details'}
+            </Text>
+          </Pressable>
+
+          {detailsOpen ? (
+            <View style={styles.activityPanel}>
+              <Text style={styles.activitySummary}>
+                {bridgeReady ? 'Mac connected' : 'Mac not reachable'}
+                {gitBranch ? `  |  ${gitBranch}` : ''}
+              </Text>
+              {activitySteps.length ? (
+                <View style={styles.stepList}>
+                  {activitySteps.map((step, index) => (
+                    <View key={`${index}-${step}`} style={styles.stepRow}>
+                      <View
+                        style={[
+                          styles.stepDot,
+                          index === activitySteps.length - 1 && agentActive && styles.stepDotActive,
+                        ]}
+                      />
+                      <Text style={styles.stepText}>{step}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.activityEmpty}>No agent activity yet.</Text>
+              )}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={rawOutputOpen ? 'Hide technical details' : 'Show technical details'}
+                onPress={() => setRawOutputOpen((open) => !open)}
+                style={styles.technicalButton}
+              >
+                <Text style={styles.technicalLabel}>
+                  {rawOutputOpen ? 'Hide technical details' : 'Technical details'}
+                </Text>
+              </Pressable>
+              {rawOutputOpen ? (
+                <View style={styles.technicalPanel}>
+                  {activityOutput ? (
+                    <Text selectable style={styles.terminalText}>
+                      {activityOutput}
+                    </Text>
+                  ) : null}
                   <TextInput
                     autoCapitalize="none"
                     autoCorrect={false}
-                    value={branchName}
-                    onChangeText={setBranchName}
-                    placeholder="branch name"
-                    placeholderTextColor="rgba(255,255,255,0.4)"
-                    style={styles.gitInput}
+                    value={bridgeUrl}
+                    onChangeText={setBridgeUrl}
+                    placeholder="Bridge address"
+                    placeholderTextColor="rgba(255,255,255,0.35)"
+                    style={styles.bridgeInput}
                   />
-                  <Pressable onPress={() => gitSwitch(false)} style={styles.gitBtn}>
-                    <Text style={styles.gitBtnText}>Switch</Text>
-                  </Pressable>
-                  <Pressable onPress={() => gitSwitch(true)} style={styles.gitBtn}>
-                    <Text style={styles.gitBtnText}>New</Text>
-                  </Pressable>
                 </View>
+              ) : null}
+            </View>
+          ) : null}
+        </ScrollView>
 
-                {gitFiles.length === 0 ? (
-                  <Text style={styles.gitClean}>Working tree clean</Text>
-                ) : (
-                  gitFiles.map((f) => (
-                    <Text key={f.path} selectable style={styles.gitFile}>
-                      <Text style={styles.gitFileStatus}>{f.status || '•'}</Text> {f.path}
-                    </Text>
-                  ))
-                )}
-
-                <View style={styles.gitInputRow}>
-                  <TextInput
-                    value={commitMsg}
-                    onChangeText={setCommitMsg}
-                    placeholder="commit message"
-                    placeholderTextColor="rgba(255,255,255,0.4)"
-                    style={styles.gitInput}
-                  />
-                  <Pressable onPress={gitCommit} style={styles.gitBtn}>
-                    <Text style={styles.gitBtnText}>Commit</Text>
-                  </Pressable>
-                  <Pressable onPress={gitPush} disabled={pushing} style={styles.gitBtn}>
-                    <Text style={styles.gitBtnText}>{pushing ? '...' : 'Push'}</Text>
-                  </Pressable>
-                </View>
-
-                <View style={styles.gitFooter}>
-                  <Pressable onPress={refreshGit} hitSlop={8}>
-                    <Text style={styles.refreshText}>↻ Refresh</Text>
-                  </Pressable>
-                  {gitMsg ? <Text style={styles.gitStatusMsg}>{gitMsg}</Text> : null}
-                </View>
-              </ScrollView>
-            ) : tab === 'agents' ? (
-              <View style={styles.statusPane}>
-                <View style={styles.healthCard}>
-                  <View style={[styles.healthDot, { backgroundColor: bridgeReady ? '#30d158' : '#8e8e93' }]} />
-                  <View style={styles.healthCopy}>
-                    <Text style={styles.healthTitle}>Coding agent</Text>
-                    <Text style={styles.healthBody}>
-                      {bridgeReady
-                        ? `Ready on ${bridgeTarget || 'your Mac'}`
-                        : 'Not reachable from this preview.'}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.healthCard}>
-                  <View style={[styles.healthDot, { backgroundColor: sendState === 'sending' ? '#ffcc00' : '#30d158' }]} />
-                  <View style={styles.healthCopy}>
-                    <Text style={styles.healthTitle}>Current task</Text>
-                    <Text style={styles.healthBody}>
-                      {sendState === 'sending' ? 'Working on your prompt.' : 'No active prompt.'}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={styles.panelHint}>
-                  Next this becomes usage, weekly spend, agent availability, and which app each agent is attached to.
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.statusPane}>
-                <View style={styles.healthCard}>
-                  <View style={[styles.healthDot, { backgroundColor: bridgeReady ? '#30d158' : '#ff453a' }]} />
-                  <View style={styles.healthCopy}>
-                    <Text style={styles.healthTitle}>Mac link</Text>
-                    <Text style={styles.healthBody}>
-                      {bridgeReady ? 'Your phone can reach the Slouch bridge.' : 'Your phone cannot reach the Slouch bridge yet.'}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.healthCard}>
-                  <View style={[styles.healthDot, { backgroundColor: base ? '#30d158' : '#8e8e93' }]} />
-                  <View style={styles.healthCopy}>
-                    <Text style={styles.healthTitle}>Preview route</Text>
-                    <Text style={styles.healthBody}>
-                      {base ? 'Auto-detected from the preview connection.' : 'Waiting for a preview connection.'}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={styles.fieldLabel}>Advanced address</Text>
-                <TextInput
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  value={bridgeUrl}
-                  onChangeText={setBridgeUrl}
-                  placeholder="http://your-mac-ip:8081/slouch"
-                  placeholderTextColor="rgba(255,255,255,0.4)"
-                  style={styles.settingsInput}
-                />
-                <Text selectable style={styles.panelHint}>
-                  Slouch normally fills this in for you. Change it only if the app says the Mac link is offline.
-                </Text>
-              </View>
-            )}
-          </View>
-        </View>
-
-        {message ? <Text style={styles.statusMsg}>{message}</Text> : null}
-
-        {/* Composer */}
         <View style={styles.composer}>
-          <Pressable onPress={() => setTab('connection')} style={styles.plusBtn} hitSlop={6}>
-            <Text style={styles.plusText}>＋</Text>
-          </Pressable>
           <TextInput
             multiline
             value={prompt}
-            onChangeText={setPrompt}
-            placeholder="Ask the agent…"
-            placeholderTextColor="rgba(255,255,255,0.45)"
+            onChangeText={(value) => {
+              setPrompt(value);
+              if (sendState === 'error') {
+                setSendState('idle');
+                setStatusMessage('');
+              }
+            }}
+            placeholder="Message Slouch"
+            placeholderTextColor="rgba(255,255,255,0.42)"
             style={styles.composerInput}
           />
-          <Pressable onPress={toggleMic} style={styles.iconBtn} hitSlop={6}>
-            <Text style={styles.iconText}>{recording ? '■' : '🎤'}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={recording ? 'Stop dictation' : 'Dictate prompt'}
+            onPress={() => (recording ? stopAndTranscribe() : startRecording())}
+            style={[styles.iconButton, recording && styles.recordingButton]}
+          >
+            <Text style={styles.micText}>{recording ? '■' : 'mic'}</Text>
           </Pressable>
           <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Send prompt"
+            disabled={!prompt.trim() || sendState === 'sending'}
             onPress={sendPrompt}
-            disabled={sendState === 'sending'}
-            style={styles.sendBtn}
-            hitSlop={6}
+            style={[
+              styles.sendButton,
+              (!prompt.trim() || sendState === 'sending') && styles.sendButtonDisabled,
+            ]}
           >
-            {sendState === 'sending' ? (
-              <ActivityIndicator color="#07111f" />
-            ) : (
-              <Text style={styles.sendArrow}>↑</Text>
-            )}
+            <Text style={styles.sendText}>↑</Text>
           </Pressable>
         </View>
       </AdaptiveGlass>
@@ -726,16 +620,15 @@ const styles = StyleSheet.create({
   root: {
     position: 'absolute',
     top: 0,
-    left: 0,
     right: 0,
     bottom: 0,
+    left: 0,
     alignItems: 'center',
   },
   collapsedRoot: {
     justifyContent: 'flex-end',
     paddingBottom: BOTTOM_GAP,
   },
-  // Collapsed pill
   pillGlass: {
     overflow: 'hidden',
     borderRadius: 999,
@@ -748,144 +641,99 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 9,
   },
   pillText: {
     color: '#ffffff',
     fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 0.3,
+    fontWeight: '700',
   },
   dot: {
-    width: 9,
-    height: 9,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  // Expanded sheet
   sheet: {
     position: 'absolute',
-    left: 8,
     right: 8,
+    left: 8,
     overflow: 'hidden',
-    borderRadius: 28,
+    borderRadius: 24,
     borderCurve: 'continuous',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.16)',
-    backgroundColor: '#05070a',
-    padding: 14,
+    borderColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: '#090a0c',
+    padding: 12,
     gap: 10,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    paddingHorizontal: 2,
   },
-  closeBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.09)',
   },
   closeText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  headerTitle: {
-    flex: 1,
-    color: '#ffffff',
+    color: 'rgba(255,255,255,0.75)',
     fontSize: 15,
     fontWeight: '700',
   },
-  headerStatus: {
-    color: 'rgba(255,255,255,0.56)',
+  titleGroup: {
+    flex: 1,
+  },
+  title: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  subtitle: {
+    color: 'rgba(255,255,255,0.42)',
+    fontSize: 11,
+  },
+  connection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  connectionText: {
+    color: 'rgba(255,255,255,0.58)',
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '600',
   },
-  contentRow: {
-    flexDirection: 'row',
-    gap: 10,
-    minHeight: 210,
+  chat: {
+    flex: 1,
   },
-  sideBar: {
-    width: 66,
-    gap: 8,
+  chatContent: {
+    flexGrow: 1,
+    justifyContent: 'flex-end',
+    gap: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 10,
   },
-  sideBtn: {
-    minHeight: 50,
-    borderRadius: 16,
-    borderCurve: 'continuous',
-    alignItems: 'center',
+  emptyState: {
+    flex: 1,
     justifyContent: 'center',
-    gap: 3,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  sideBtnActive: {
-    backgroundColor: 'rgba(255,255,255,0.14)',
-  },
-  sideIcon: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  sideLabel: {
-    color: 'rgba(255,255,255,0.76)',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  mainPane: {
-    flex: 1,
-    minWidth: 0,
-    gap: 8,
-  },
-  paneHeader: {
-    minHeight: 28,
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    minHeight: 180,
   },
-  paneTitle: {
-    flex: 1,
-    color: '#ffffff',
+  emptyTitle: {
+    color: 'rgba(255,255,255,0.58)',
     fontSize: 17,
-    fontWeight: '900',
-  },
-  newBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-  },
-  newText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  body: {
-    flex: 1,
-    minHeight: 120,
-  },
-  bodyContent: {
-    paddingVertical: 8,
-    gap: 10,
-  },
-  empty: {
-    paddingVertical: 48,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 15,
     fontWeight: '600',
   },
   userBubble: {
     alignSelf: 'flex-end',
-    maxWidth: '85%',
-    backgroundColor: '#1e3a5f',
-    borderRadius: 18,
+    maxWidth: '86%',
+    borderRadius: 16,
     borderCurve: 'continuous',
+    backgroundColor: 'rgba(255,255,255,0.12)',
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
@@ -894,178 +742,144 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
   },
-  agentText: {
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  // Changes tab
-  gitInputRow: {
+  statusRow: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginVertical: 6,
+    gap: 9,
+    maxWidth: '90%',
+    paddingVertical: 4,
   },
-  gitInput: {
-    flex: 1,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    color: '#ffffff',
-    fontSize: 13,
-    paddingHorizontal: 10,
+  statusIcon: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
-  gitBtn: {
-    height: 38,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+  statusText: {
+    flexShrink: 1,
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 14,
+    lineHeight: 19,
+  },
+  errorText: {
+    color: '#ff8a80',
+  },
+  activityButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.16)',
-  },
-  gitBtnText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  gitClean: {
-    color: 'rgba(255,255,255,0.5)',
-    fontSize: 13,
+    gap: 8,
+    alignSelf: 'flex-start',
     paddingVertical: 6,
   },
-  gitFile: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  gitFileStatus: {
-    color: '#fbbf24',
-    fontWeight: '900',
-  },
-  gitFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 8,
-  },
-  refreshText: {
-    color: '#7dd3fc',
+  activityLabel: {
+    color: 'rgba(255,255,255,0.66)',
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
-  gitStatusMsg: {
-    flex: 1,
-    color: 'rgba(255,255,255,0.6)',
+  activityMeta: {
+    color: 'rgba(255,255,255,0.34)',
     fontSize: 12,
   },
-  settingsInput: {
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    paddingHorizontal: 12,
-  },
-  statusPane: {
-    gap: 9,
-    paddingTop: 4,
-  },
-  healthCard: {
-    flexDirection: 'row',
+  activityPanel: {
     gap: 10,
-    borderRadius: 16,
-    borderCurve: 'continuous',
+    borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.055)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
     padding: 12,
   },
-  healthDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginTop: 4,
-  },
-  healthCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  healthTitle: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  healthBody: {
+  activitySummary: {
     color: 'rgba(255,255,255,0.62)',
     fontSize: 12,
-    lineHeight: 17,
-  },
-  fieldLabel: {
-    color: 'rgba(255,255,255,0.64)',
-    fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-  },
-  panelHint: {
-    color: 'rgba(255,255,255,0.56)',
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  statusMsg: {
-    color: '#fca5a5',
-    fontSize: 12,
     fontWeight: '600',
-    paddingHorizontal: 4,
   },
-  // Composer
+  activityEmpty: {
+    color: 'rgba(255,255,255,0.38)',
+    fontSize: 12,
+  },
+  stepList: {
+    gap: 9,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+  stepDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.32)',
+  },
+  stepDotActive: {
+    backgroundColor: '#ffcc00',
+  },
+  stepText: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  technicalButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 2,
+  },
+  technicalLabel: {
+    color: 'rgba(255,255,255,0.42)',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  technicalPanel: {
+    gap: 10,
+  },
+  terminalText: {
+    color: 'rgba(255,255,255,0.58)',
+    fontSize: 10,
+    lineHeight: 14,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  bridgeInput: {
+    height: 36,
+    borderRadius: 9,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+    paddingHorizontal: 10,
+  },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 8,
-  },
-  plusBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.1)',
-  },
-  plusText: {
-    color: '#ffffff',
-    fontSize: 20,
-    fontWeight: '500',
-    marginTop: -2,
+    gap: 7,
+    borderRadius: 22,
+    borderCurve: 'continuous',
+    backgroundColor: 'rgba(255,255,255,0.09)',
+    padding: 5,
+    paddingLeft: 11,
   },
   composerInput: {
     flex: 1,
-    minHeight: 44,
-    maxHeight: 110,
-    borderRadius: 22,
-    borderCurve: 'continuous',
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    minHeight: 38,
+    maxHeight: 108,
     color: '#ffffff',
     fontSize: 16,
     lineHeight: 21,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
+    paddingHorizontal: 3,
+    paddingVertical: 8,
   },
-  iconBtn: {
-    width: 38,
+  iconButton: {
+    minWidth: 38,
     height: 38,
     borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.1)',
   },
-  iconText: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '900',
+  recordingButton: {
+    backgroundColor: 'rgba(255,69,58,0.28)',
   },
-  sendBtn: {
+  micText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  sendButton: {
     width: 38,
     height: 38,
     borderRadius: 19,
@@ -1073,10 +887,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#ffffff',
   },
-  sendArrow: {
-    color: '#07111f',
+  sendButtonDisabled: {
+    opacity: 0.28,
+  },
+  sendText: {
+    color: '#090a0c',
     fontSize: 20,
-    fontWeight: '900',
+    fontWeight: '800',
     marginTop: -1,
   },
 });

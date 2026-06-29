@@ -5,22 +5,25 @@ A tiny Expo app for testing the Slouch phone-driven development loop.
 Use this before pointing Slouch at a real app with auth, API calls, native config,
 or messy working-tree state.
 
-## Run
+## Run the demo
 
-From this directory:
+The files in this directory are the tracked template. Run Slouch from anywhere
+to create and use a private working copy at `~/.slouch/demo-workspace`:
 
 ```bash
-source ../../shell/expo-dev.zsh
-slouch init
-slouch doctor
-slouch start
+slouch demo
 ```
 
-Or from anywhere after install:
+Use a tunnel away from the Mac's network, or reset the working copy to discard
+all demo experiments:
 
 ```bash
 slouch demo --tunnel
+slouch demo --reset
 ```
+
+Only run `npm start` from this template directory when developing the demo
+infrastructure itself. Ordinary prompts should target the private working copy.
 
 From your phone terminal:
 
@@ -38,15 +41,16 @@ Keep it JS/TS only.
 
 ## Overlay bridge
 
-The demo app includes the first Slouch overlay: a small bottom status pill inside
-Expo Go that expands into a one-app mission-control sheet with a side rail. The
-bridge is built into Metro via `metro.config.js`, which exposes `/slouch/prompt`
+The demo app includes the Slouch overlay: a small bottom status pill inside Expo
+Go that expands into a focused chat sheet. The bridge is built into Metro via
+`metro.config.js`, which exposes `/slouch/prompt`
 on the same host/port as the bundler and forwards each prompt to the agent's tmux
 window with `tmux send-keys`.
 
 Because it rides Metro's own connection, it works over both LAN and `--tunnel`
 (cellular) with no extra port or process. The app auto-derives the bridge URL from
-the Metro connection, so the Connection screen fills itself in.
+the Metro connection. Raw terminal and connection details are collapsed under
+**Activity** instead of occupying the conversation.
 
 `slouch start`/`slouch demo` export `SLOUCH_SESSION` so the middleware types into
 the right tmux session (`<session>:claude`). To point at a different window, set
@@ -62,7 +66,7 @@ over your app and survives edits the agent makes:
   instead of `App`.
 - `slouch/SlouchRoot.tsx` — wraps your `App` in an error boundary and renders
   `SlouchOverlay` as a sibling on top (dev-only, via `__DEV__`).
-- `slouch/SlouchOverlay.tsx` — the status pill, mission-control sheet, side rail, bridge client, and dictation.
+- `slouch/SlouchOverlay.tsx` — the status pill, focused chat sheet, bridge client, and dictation.
 - `App.tsx` — just your app. Edit it freely; the overlay can't be broken by it.
 
 A **runtime** error in `App.tsx` is caught by the boundary (you get a recovery panel
@@ -95,23 +99,18 @@ export SLOUCH_TRANSCRIBE_CMD='your-stt-cli "$SLOUCH_AUDIO"'
 Set the variable in the shell that launches Metro (so the bridge inherits it). With
 neither set, the mic still records but the bridge returns a "needs setup" message.
 
-## In-app sheet: Chat + Changes + Agents + Connection
+## In-app chat
 
-Tap the bottom Slouch pill to expand the sheet, then use the side rail to switch
-between **Chat**, **Changes**, **Agents**, and **Connection**. Close the sheet to
-keep using the app behind it.
+Tap the bottom Slouch pill to open one focused conversation. Your prompts remain
+the primary content. Slouch turns recognizable agent events into a short lifecycle
+such as **Thinking**, **Reading App.tsx**, and **Editing App.tsx**, then collapses
+the deduplicated steps under **Activity**. Raw `tmux capture-pane` output and the
+bridge address sit one level deeper under **Technical details**.
 
-- **Chat** — send prompts and watch a live mirror of the agent's terminal output
-  (polls `/slouch/output`, which is `tmux capture-pane` of the agent window). You
-  see what it's doing without leaving the app. It's the raw terminal view, not a
-  parsed chat.
-- **Changes** — branch name, changed files, switch/create branch, commit, and push, via
-  `/slouch/git/*`. Git ops are **scoped to the project directory** (`-- .`) so a demo
-  nested in a larger repo only touches its own files.
-- **Agents** — plain-language agent availability and current task state. This is
-  where usage, weekly spend, and multi-agent health will land.
-- **Connection** — Mac link and preview route health, with the raw bridge URL tucked
-  away as an advanced escape hatch.
+Slouch intentionally does not present captured terminal text as an assistant
+message. The current tmux bridge has no structured final-response event, so the
+honest result is the app changing through Fast Refresh. A structured agent transport
+could add real assistant messages later without making terminal noise the product.
 
 Note: the bridge runs `tmux` and `git` commands on your Mac with no auth, reachable
 by anyone who has your tunnel URL. That's fine for your own private tunnel; don't

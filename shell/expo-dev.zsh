@@ -3,7 +3,8 @@
 # `slouch start`            boot/attach a tmux session for the Expo project in $PWD
 # `slouch start <name>`     same, with an explicit session name
 # `slouch start --tunnel`   start Metro with --tunnel (for cellular / off-LAN)
-# `slouch demo`             boot/attach the bundled demo app
+# `slouch demo`             boot/attach a private copy of the bundled demo app
+# `slouch demo --reset`     recreate that copy from the tracked template
 # `slouch restart`          restart the Metro window of an existing session
 # `slouch init`             drop CLAUDE.md + AGENTS.md into the current project
 # `slouch awake`            keep the Mac awake while the display may sleep
@@ -150,8 +151,81 @@ _slouch_start() {
 _slouch_demo() {
   emulate -L zsh
 
-  cd "$SLOUCH_HOME/examples/slouch-demo" || return
-  _slouch_start "$@"
+  local template="$SLOUCH_HOME/examples/slouch-demo"
+  local workspace="${SLOUCH_DEMO_HOME:-$HOME/.slouch/demo-workspace}"
+  local reset=0 tunnel=0 arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      --reset)  reset=1 ;;
+      --tunnel) tunnel=1 ;;
+      *)
+        print -u2 "usage: slouch demo [--tunnel] [--reset]"
+        return 1
+        ;;
+    esac
+  done
+
+  if (( reset )) || [[ ! -f "$workspace/app.json" ]]; then
+    print "slouch: preparing private demo workspace at $workspace"
+    mkdir -p "$workspace" || return
+    rsync -a --delete \
+      --exclude node_modules \
+      --exclude .expo \
+      --exclude .git \
+      "$template/" "$workspace/" || return
+
+    if [[ ! -e "$workspace/node_modules" ]]; then
+      if [[ -d "$template/node_modules" ]]; then
+        ln -s "$template/node_modules" "$workspace/node_modules" || return
+      else
+        print "slouch: installing demo dependencies (first run only)"
+        npm --prefix "$workspace" install || return
+      fi
+    fi
+
+    rm -rf "$workspace/.git"
+    git -C "$workspace" init -q -b main || return
+    git -C "$workspace" add -A || return
+    git -C "$workspace" \
+      -c user.name=Slouch \
+      -c user.email=slouch@local \
+      commit -q -m "Slouch demo baseline" || return
+    print "slouch: demo reset to the tracked template"
+  elif [[ ! -d "$workspace/.git" ]]; then
+    git -C "$workspace" init -q -b main || return
+    git -C "$workspace" add -A || return
+    git -C "$workspace" \
+      -c user.name=Slouch \
+      -c user.email=slouch@local \
+      commit -q -m "Slouch demo baseline" || return
+  fi
+
+  # Replace sessions created by older Slouch versions that ran the tracked
+  # template directly. When invoked inside that session, rename it first so the
+  # new one can start before the old shell is removed.
+  local legacy_session="" session_path=""
+  if tmux has-session -t slouch-demo 2>/dev/null; then
+    session_path="$(tmux display-message -p -t slouch-demo:metro '#{pane_current_path}' 2>/dev/null)"
+    if [[ "$session_path" != "$workspace" ]]; then
+      if [[ -n "$TMUX" ]]; then
+        legacy_session="slouch-demo-legacy-${EPOCHSECONDS}"
+        tmux rename-session -t slouch-demo "$legacy_session" || return
+      else
+        tmux kill-session -t slouch-demo || return
+      fi
+    fi
+  fi
+
+  cd "$workspace" || return
+  if (( tunnel )); then
+    _slouch_start --tunnel slouch-demo
+  else
+    _slouch_start slouch-demo
+  fi
+
+  [[ -n "$legacy_session" ]] && print "slouch: previous demo session kept as $legacy_session"
+  return 0
 }
 
 # Restart just the Metro window of an existing session (e.g. after changing
@@ -312,7 +386,7 @@ slouch() {
       print
       print "commands:"
       print "  start [--tunnel] [name]  boot/attach the Expo tmux session"
-      print "  demo [--tunnel]          boot/attach the bundled demo app"
+      print "  demo [--tunnel] [--reset] boot/attach a private demo workspace"
       print "  restart [--tunnel]       restart the Metro window of a session"
       print "  init                     install Expo agent rules"
       print "  awake [--for seconds]    keep Mac awake while display may sleep"
